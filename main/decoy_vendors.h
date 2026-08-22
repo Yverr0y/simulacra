@@ -1,16 +1,16 @@
-// decoy_vendors.h — vendor palette for simulacra decoys.
+// decoy_vendors.h - vendor palette for simulacra decoys.
 //
 // Each entry pairs a Bluetooth SIG "Company Identifier" with a short, plausible
 // product-style name. The company ID is what a scanner reads from the
-// manufacturer-specific data field to attribute a device to a vendor — this is
+// manufacturer-specific data field to attribute a device to a vendor - this is
 // the legitimate, spec-defined vendor signal, and it is NOT what triggers
 // pairing pop-ups.
 //
 // Deliberately EXCLUDED from the default palette:
-//   * Apple      (0x004C) — its "Continuity" payload format triggers AirPods/
+//   * Apple      (0x004C) - its "Continuity" payload format triggers AirPods/
 //                           AirTag/"Find My" pop-ups on nearby iPhones.
-//   * Microsoft  (0x0006) — "Swift Pair" beacons trigger Windows pop-ups.
-//   * Google Fast Pair (service data 0xFE2C) — triggers Android pairing sheets.
+//   * Microsoft  (0x0006) - "Swift Pair" beacons trigger Windows pop-ups.
+//   * Google Fast Pair (service data 0xFE2C) - triggers Android pairing sheets.
 // A privacy decoy needs realistic *presence*, not pop-up prompts aimed at
 // bystanders, so those formats are simply never emitted. See simulacra_main.c.
 //

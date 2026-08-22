@@ -57,7 +57,7 @@ void phantom_set_count(int n, uint32_t now_ms)
     if (n > s_n) {
         // Guarantee a BLE slot for every persona before creating it. phantom_sync_ble binds slot i
         // to persona i and simply stops at ble_devices_count(), so a persona created beyond the BLE
-        // population would be Wi-Fi-only — the same single-radio ghost, mirrored.
+        // population would be Wi-Fi-only - the same single-radio ghost, mirrored.
         if (n > ble_devices_count()) ble_devices_set_count(n, now_ms);
         for (int i = s_n; i < n; i++) { s_ph[i].generation = 0; ph_spawn(&s_ph[i], now_ms); }
     } else {

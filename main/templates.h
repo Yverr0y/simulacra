@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// A device "archetype" — a self-contained bundle binding vendor/format, interval band, and
+// A device "archetype" - a self-contained bundle binding vendor/format, interval band, and
 // (optional) name together, so generation can never produce an impossible combination.
 typedef enum {
     FMT_VENDOR_MFG,     // company_id + structured blob (earbuds / fitness / sensor)
@@ -11,7 +11,7 @@ typedef enum {
     FMT_EDDYSTONE_UID,  // svc-data 0xFEAA frame 0x00
     FMT_EDDYSTONE_URL,  // svc-data 0xFEAA frame 0x10
     FMT_SVC_TRACKER,    // service-data tracker (Tile 0xFEED)
-    FMT_FLAGS_ONLY,     // flags only (AD "01") — the terse-advertiser majority of real ambient BLE
+    FMT_FLAGS_ONLY,     // flags only (AD "01") - the terse-advertiser majority of real ambient BLE
     FMT_SVC_UUID16,     // flags + complete 16-bit service UUID list (AD "01,03"), no service data
 } fmt_family_t;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RPA-on-air presence check — attacker's-eye confirmation for the churn_adv raw-HCI fix.
+"""RPA-on-air presence check - attacker's-eye confirmation for the churn_adv raw-HCI fix.
 
 Milestone A's headline decoy is the "privacy phone": a device advertising with a
 Resolvable-Private-Address subtype (top-2-bits 01 / 0x40) that rotates. NimBLE's
@@ -16,13 +16,13 @@ It reuses capture_profile.py's parser (DLT256 + Nordic DLT157 aware) and counts
 DISTINCT advertisers by address subtype. Exits non-zero if fewer than the floor of
 RPA advertisers are present.
 
-HONEST SCOPE: this counts ALL RPA advertisers in range — ambient real phones emit
+HONEST SCOPE: this counts ALL RPA advertisers in range - ambient real phones emit
 RPA too, so a nonzero count is not by itself proof the DECOYS are emitting it. The
 decisive signal is before-vs-after: with the fleet running, decoys were contributing
 zero RPA before the fix; a healthy RPA count now (especially of short-lived, churning
 advertisers co-located with the fleet) is the confirmation. For strict decoy
 isolation, cross-reference strong-RSSI / co-located advertisers or decoy archetypes.
-This script does NOT measure the physical layer (RSSI/AoA) — consistent with the
+This script does NOT measure the physical layer (RSSI/AoA) - consistent with the
 spec's honest ceiling, on-air RPA presence raises cost, it is not invisibility.
 """
 import sys, os
@@ -69,7 +69,7 @@ def main():
         print("      strong-RSSI/co-located advertisers or decoy archetypes.")
         sys.exit(0)
     print(f"FAIL: only {rpa} RPA-shaped advertisers (< floor {floor}).")
-    print("      If the fleet is running and co-located, the decoys may not be emitting RPA —")
+    print("      If the fleet is running and co-located, the decoys may not be emitting RPA -")
     print("      check the serial for churn_adv 'rnd_addr rc' errors and confirm the fix is flashed.")
     sys.exit(1)
 

@@ -144,7 +144,7 @@ static bool sd_mount(void)
 
 // ---- ESP-NOW radar link (STA on a fixed channel, broadcast, AES-GCM via radar_wire) ----
 static const uint8_t BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
-static radar_wire_status_t s_status;             // last good status (any node — legacy single-node views)
+static radar_wire_status_t s_status;             // last good status (any node - legacy single-node views)
 static volatile uint32_t   s_status_ms;          // when it arrived (0 = never)
 static fleet_status_t      s_fleet;              // per-node status table, keyed by sender (HOME strip)
 static uint8_t  s_node_mac[FLEET_STATUS_MAX][6]; // MAC registry -> stable small node id
@@ -185,7 +185,7 @@ static uint8_t  s_salt[RADAR_SALT_LEN]; static uint64_t s_ctr;
 
 // Frame counters must never restart: decoys gate CONFIG on a monotonic floor they persist across
 // reboots, so a Vigil that resumed from 1 would have every command rejected as stale. Reserve a
-// block of counter values in NVS at boot and spend it from RAM — one flash write per boot instead
+// block of counter values in NVS at boot and spend it from RAM - one flash write per boot instead
 // of one per frame. Counters are public (they ride in the nonce); only monotonicity matters.
 #define CTR_NVS_NS    "vigil"
 #define CTR_NVS_KEY   "tx_ctr"
@@ -202,7 +202,7 @@ static void ctr_reserve_block(void){
     nvs_handle_t h;
     if (nvs_open(CTR_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
         s_ctr_limit = UINT64_MAX;        // no NVS: fall back to per-boot counters. Decoys that
-        ESP_LOGE(TAG, "ctr: NVS unavailable — CONFIG may be rejected as stale after a reboot");
+        ESP_LOGE(TAG, "ctr: NVS unavailable - CONFIG may be rejected as stale after a reboot");
         return;                          // already hold a higher floor will reject CONFIG.
     }
     uint64_t base = 0;
@@ -928,7 +928,7 @@ void app_main(void)
         // Long-press (>=1.5s) = context action: accept a pending TOFU request, else rotate the
         // fleet key if a window is open, else open a fresh 30s enrollment window. (Short taps
         // keep their normal navigation meaning; the momentary press that begins a hold may still
-        // register as a tap — gesture zones are bench-tunable in Task 6/7.)
+        // register as a tap - gesture zones are bench-tunable in Task 6/7.)
         static uint32_t s_press_start; static bool s_lp_fired;
         if (edge) { s_press_start = now; s_lp_fired = false; }
         if (press && !s_lp_fired && !s_fleet_modal && (now - s_press_start) >= 1500) {

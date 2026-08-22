@@ -37,7 +37,7 @@ void              observe_reprofile_init(uint32_t boot_salt);
 // ext-adv keeps running, then close the sweep and fold into the model.
 // Re-profile window, non-blocking. Call observe_window_begin() once, then observe_window_poll()
 // every tick until it returns true (the model has been updated and the sweep closed). The caller's
-// task keeps running throughout — this used to block it for the full 15 s duration, stalling
+// task keeps running throughout - this used to block it for the full 15 s duration, stalling
 // churn, the detector drain and probe bursts along with it.
 void              observe_window_begin(uint32_t duration_ms);
 bool              observe_window_poll(uint32_t now_ms);

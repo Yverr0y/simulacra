@@ -442,12 +442,12 @@ static void test_learn_merge_wire(void)
     ST_CHECK(learn_merge_wire(store, &cnt, 4, &a, 1) && cnt == 1, "merge_wire: first insert");
     ST_CHECK(store[0].reinforce_count == 5, "merge_wire: keeps incoming weight on insert");
 
-    // Re-merging the same record must NOT inflate the weight (max, not increment) —
+    // Re-merging the same record must NOT inflate the weight (max, not increment) -
     // and a pure no-op duplicate reports "unchanged" so Vigil doesn't re-save the blob.
     ST_CHECK(!learn_merge_wire(store, &cnt, 4, &a, 2), "merge_wire: no-op dup reports unchanged");
     ST_CHECK(cnt == 1 && store[0].reinforce_count == 5, "merge_wire: dup keeps max (no inflation)");
 
-    // A stronger copy raises it to the max — that IS a change.
+    // A stronger copy raises it to the max - that IS a change.
     learned_template_t a2 = a; a2.reinforce_count = 9;
     ST_CHECK(learn_merge_wire(store, &cnt, 4, &a2, 3), "merge_wire: max raise reports changed");
     ST_CHECK(store[0].reinforce_count == 9, "merge_wire: max raises weight");
@@ -1135,7 +1135,7 @@ static void test_radar_wire(void)
     ST_CHECK(radar_replay_ok(&rp, salt, 101),  "newer counter accepted");
 
     // SEC-1: the telemetry gate treats an unfamiliar salt as "peer rebooted" and accepts. That is
-    // deliberate there, and exactly why CONTROL must not use it — pin the difference in a test.
+    // deliberate there, and exactly why CONTROL must not use it - pin the difference in a test.
     {
         uint8_t salt_b[RADAR_SALT_LEN] = { 0xDE,0xAD,0xBE,0xEF,0x05,0x06,0x07,0x08 };
         ST_CHECK(radar_replay_ok(&rp, salt_b, 1),
@@ -1413,7 +1413,7 @@ static void test_rf_model_decay(void)
 static void test_generate_diversity_floor(void)
 {
     // A model skewed to a single loud vendor (a room full of Galaxy Buds) must NOT produce a
-    // single-manufacturer synthetic crowd — the generation diversity floor fills the overflow
+    // single-manufacturer synthetic crowd - the generation diversity floor fills the overflow
     // from varied built-in templates.
     rf_model_t m; rf_model_reset(&m);
     for (int i = 0; i < 200; i++) rf_model_observe(&m, 0x0075, -50, 3, 500);   // Samsung only

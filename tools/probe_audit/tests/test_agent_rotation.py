@@ -60,7 +60,7 @@ class CoexistRotation(unittest.TestCase):
         self.assertEqual(len(macs), len(set(macs)), "a rotation reused a MAC")
 
     def test_coexist_task_actually_calls_rotate_tick(self):
-        """The behavioural tests above pass whether or not the shipped build ever calls rotation —
+        """The behavioural tests above pass whether or not the shipped build ever calls rotation -
         that is precisely how BUG-1 hid. Assert the call exists on the coexist path itself."""
         coexist = os.path.join(os.path.dirname(os.path.dirname(TOOL)), "main", "coexist.c")
         with open(coexist, encoding="utf-8") as f:

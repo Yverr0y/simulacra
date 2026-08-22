@@ -9,7 +9,7 @@ Two validators that score the same three metrics from the spec's validation bar
 | **decorrelation** | no tight time window shows a big simultaneous volley of distinct MACs (no lockstep) |
 | **constellation** | many distinct MACs over the run, low first-third ⇄ last-third overlap (the set turns over, so it can't become a portable fingerprint) |
 
-## `sniff_analyze.py` — fast inner loop (our own C5 sniffer)
+## `sniff_analyze.py` - fast inner loop (our own C5 sniffer)
 
 Flash a spare C5 with `SIMULACRA_SNIFF=1` (see `main/sniff.c`, `SNIFF_LOG_FRAMES=1`, parked ch1),
 save its serial to a file, and:
@@ -19,10 +19,10 @@ python sniff_analyze.py sniff.log
 python sniff_analyze.py sniff.log --rssi-min -60 --rssi-max -45   # isolate co-located decoys
 ```
 
-This is the on-desk verifier used during development — no Kismet needed. One C5 sniffs while the
+This is the on-desk verifier used during development - no Kismet needed. One C5 sniffs while the
 other C5 + the C6 act as decoys.
 
-## `pcap_analyze.py` — attacker's-eye final check (Kismet)
+## `pcap_analyze.py` - attacker's-eye final check (Kismet)
 
 Run a Kismet capture near the fleet with pcapng logging, then:
 

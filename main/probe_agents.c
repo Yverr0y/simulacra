@@ -223,7 +223,7 @@ void probe_agents_glide_tick(uint32_t now_ms)
     if (cur == s_glide_target) {                   // already there: re-arm anyway, or s_next_glide_ms
         s_next_glide_ms = now_ms + rnd_range(GLIDE_MIN_MS, GLIDE_MAX_MS);
         return;                                    // stays in the past and the NEXT re-profile's
-    }                                              // first step lands instantly — a visible step
+    }                                              // first step lands instantly - a visible step
                                                    // change, which is what the glide exists to avoid
     probe_agents_set_target(probe_glide_next(cur, s_glide_target, GLIDE_STEP), now_ms);
     s_next_glide_ms = now_ms + rnd_range(GLIDE_MIN_MS, GLIDE_MAX_MS);   // re-arm with a fresh draw

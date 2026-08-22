@@ -58,7 +58,7 @@ static const device_template_t *first_of_family(fmt_family_t fam)
 // Choose the AD structure for a no-mfg decoy, matched to real ambient BLE: mostly TERSE advertisers
 // (flags-only "01", flags+uuid16 "01,03") with a small service-data beacon share for tracker/beacon
 // persona. All are no-mfg on air, so this keeps the vendor histogram closed while closing the
-// AD-structure tell — the no-mfg mass used to be ~100% service-data ("01,03,16") against a
+// AD-structure tell - the no-mfg mass used to be ~100% service-data ("01,03,16") against a
 // flags-heavy real crowd (~53% flags-only / ~21% flags+uuid). NULL only if no templates exist.
 static const device_template_t *pick_no_mfg_template(void)
 {
@@ -151,7 +151,7 @@ static int8_t dither_tx(void)   // plausible TX spread; not all at max
 }
 
 // Draw a diverse built-in template into an identity, avoiding `avoid` (the over-represented company
-// we're diversifying away from — the built-in earbuds-sams template is itself 0x0075). Sets
+// we're diversifying away from - the built-in earbuds-sams template is itself 0x0075). Sets
 // payload/len/itvl/archetype; returns the on-air company (RF_VENDOR_UNKNOWN for service-data).
 static uint16_t diversify_fill(const rf_model_t *m, identity_t *id, uint16_t avoid)
 {

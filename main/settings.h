@@ -22,7 +22,7 @@ typedef enum {
     SIM_PRESET_DENSE, SIM_PRESET_MAX, SIM_PRESET_TURBO, SIM_PRESET_COUNT
 } sim_preset_t;
 
-// Every field here drives live behaviour — nothing is stored for display only. The CYD infers the
+// Every field here drives live behaviour - nothing is stored for display only. The CYD infers the
 // running preset from these values (sim_settings_current_preset) and shows it to the operator, so
 // a field the engine ignores would make the display lie about what the firmware is doing.
 typedef struct {

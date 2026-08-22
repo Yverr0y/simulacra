@@ -7,7 +7,7 @@
 uint16_t radar_rssi_to_radius(int8_t rssi, uint16_t r_min, uint16_t r_max);
 
 // Stable pseudo-bearing from a hash: [0,359] deg. Same hash -> same angle (synthetic; a
-// single antenna cannot triangulate — labeled as such on-screen).
+// single antenna cannot triangulate - labeled as such on-screen).
 uint16_t radar_hash_to_angle(uint32_t hash);
 
 // Polar (center cx,cy; radius r; angle deg, 0=east, CCW) -> screen x,y (y grows down).

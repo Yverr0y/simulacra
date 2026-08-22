@@ -90,7 +90,7 @@ void observe_end_sweep(rf_model_t *m, uint32_t window_ms)
     for (size_t i = 0; i < OBS_TABLE_CAP; i++) if (s_tbl[i].used) distinct++;
     // Latch saturation before the wipe. A saturated sweep means `distinct` is a floor, not a count:
     // pop_ewma under-reports, and it feeds generate_active_target and the whole population match.
-    // GEN_CEILING caps the target well below 256 today, so nothing downstream is wrong yet — but
+    // GEN_CEILING caps the target well below 256 today, so nothing downstream is wrong yet - but
     // the number must not be reported as fact when the table truncated it.
     s_last_saturated = s_saturated;
     rf_model_end_sweep(m, distinct, window_ms, s_arrivals);

@@ -20,14 +20,14 @@ root@simulacra:~# ./summon --crowd --bury-signal
 </p>
 
 **A modular, multi-node ESP32 anti-tracking system.** Simulacra continuously fabricates a
-churning crowd of plausible-but-fake wireless devices around you — drowning your real devices in
+churning crowd of plausible-but-fake wireless devices around you - drowning your real devices in
 noise so that passive trackers, ALPR add-ons, and co-travel correlators can't reliably pick your
-signal out of the crowd — while passively watching for the trackers that follow you.
+signal out of the crowd - while passively watching for the trackers that follow you.
 
 It is built from cooperating nodes, each playing to a different board's strengths, coordinated
 over an encrypted ESP-NOW link.
 
-> **Try it in your browser — no toolchain.** Plug in a board and flash a starter fleet at
+> **Try it in your browser - no toolchain.** Plug in a board and flash a starter fleet at
 > **[em3ritus.github.io/simulacra](https://em3ritus.github.io/simulacra/)** (desktop Chrome/Edge).
 
 **Jump to:** [Legal](#️-legal--responsible-use) · [How it works](#how-it-works) ·
@@ -48,7 +48,7 @@ person or device, interfere with networks or emergency services, or evade lawful
 on hardware you own, in ways that are legal where you are. No warranty; see the license.
 
 **TURBO is not a DoS mode.** It's still in-spec, non-connectable BLE advertising and standard
-802.11 probe requests at legal power — no deauth, no jamming, no malformed frames. A handful of
+802.11 probe requests at legal power - no deauth, no jamming, no malformed frames. A handful of
 ESP32 boards cannot meaningfully deny service to nearby real networks or clients; what it does is
 raise the volume of traffic someone has to process. The same rules above apply to it.
 
@@ -56,35 +56,35 @@ raise the volume of traffic someone has to process. The same rules above apply t
 
 ## How it works
 
-- **A churning synthetic crowd.** Instead of hiding a device, Simulacra hides it *in a crowd* —
+- **A churning synthetic crowd.** Instead of hiding a device, Simulacra hides it *in a crowd* -
   generating a rotating population of realistic fake devices (random-static MACs, plausible
   vendor/format shapes, realistic advertising cadence) that constantly turns over.
 - **Structure, never identity.** The self-learning engine harvests the *shape* of real nearby
-  device adverts (vendor/format/AD structure) and turns them into new decoy archetypes — but it
+  device adverts (vendor/format/AD structure) and turns them into new decoy archetypes - but it
   strips all identifying content. A learned template is "a device *of this kind*", never "*this
   device*". A hard "Law-3" gate refuses to ever learn or emit forbidden identity subtypes
   (e.g. Apple continuity / Fast Pair pairing beacons).
-- **Passive detection.** While it churns, it watches for followers — devices that persist with you
-  — and matches adverts against a signature database of known trackers (AirTag / SmartTag / Tile)
+- **Passive detection.** While it churns, it watches for followers - devices that persist with you
+  - and matches adverts against a signature database of known trackers (AirTag / SmartTag / Tile)
   and surveillance gear.
 - **Coordinated, not cloned.** Nodes share a learned library and exclude each other from their own
   models over an authenticated ESP-NOW link, so the fleet behaves like one diverse crowd rather
   than several identical decoys.
 
-## Architecture — the nodes
+## Architecture - the nodes
 
 | Node | Board | Role |
 |------|-------|------|
-| **Ward** | ESP32-C5 (dual-band Wi-Fi 6) | Fixed / vehicle decoy — dense, dual-band crowd generation |
-| **Shade** | ESP32-C6 | Mobile / everyday-carry decoy — lean, 2.4 GHz, low-profile |
-| **Vigil** | ESP32 + "Cheap Yellow Display" | Controller & librarian — radar/status screen, touch control, encrypted SD library, fleet key custody |
+| **Ward** | ESP32-C5 (dual-band Wi-Fi 6) | Fixed / vehicle decoy - dense, dual-band crowd generation |
+| **Shade** | ESP32-C6 | Mobile / everyday-carry decoy - lean, 2.4 GHz, low-profile |
+| **Vigil** | ESP32 + "Cheap Yellow Display" | Controller & librarian - radar/status screen, touch control, encrypted SD library, fleet key custody |
 
 Roles are selected at build time so one firmware tree serves every board.
 
 ## Features
 
 - Rotating BLE decoy crowd with realistic random-static MACs, vendor/format shapes, and advertising
-  cadence — including **persistent devices with per-type address rotation** (RPAs/NRPAs rotate on
+  cadence - including **persistent devices with per-type address rotation** (RPAs/NRPAs rotate on
   realistic schedules, static beacons hold) and a **death/rebirth lifecycle**, so the population
   turns over like a real crowd instead of a fixed set of decoys.
 - **Wi-Fi PAN cover:** independent, archetype-faithful probe-request agents (iPhone / Galaxy /
@@ -92,32 +92,32 @@ Roles are selected at build time so one firmware tree serves every board.
   real device can't be fingerprinted out of the probe traffic by its sequence/timing constellation.
   The agent population **matches the ambient device density** (divided across the live fleet so the
   crowd never over-populates an empty room), and a realistic majority **probe named public networks**
-  — drawn from a fixed pool of ubiquitous open SSIDs (xfinitywifi, attwifi, eduroam …), **never an
-  observed or local one** — so the fake phones blend with the real phones probing the same hotspots.
+  - drawn from a fixed pool of ubiquitous open SSIDs (xfinitywifi, attwifi, eduroam …), **never an
+  observed or local one** - so the fake phones blend with the real phones probing the same hotspots.
 - On-device **self-learning** of ambient device *shapes* into new decoy archetypes (structure-only,
   Law-3 gated), synced across the fleet and persisted to an AES-GCM-sealed SD library on Vigil, keyed
-  from the CONTROL secret in the provisioned regime (`-DSIMULACRA_FLEET_PROVISION=1` — rotates
+  from the CONTROL secret in the provisioned regime (`-DSIMULACRA_FLEET_PROVISION=1` - rotates
   automatically with `tools/gen_ctrl_key.py`). The baked-key demo regime still keys it from a
-  published, non-secret placeholder constant — an accepted tradeoff for that regime, matching its
+  published, non-secret placeholder constant - an accepted tradeoff for that regime, matching its
   documented "shared key, not private" posture elsewhere.
 - **Passive follower detection** and **tracker/surveillance fingerprint** matching.
 - **Signed fleet control:** Vigil pushes Ed25519-signed behaviour presets (PAUSE / STEALTH /
-  NORMAL / DENSE / MAX / **TURBO**) to every decoy over ESP-NOW — and the console shows which preset
+  NORMAL / DENSE / MAX / **TURBO**) to every decoy over ESP-NOW - and the console shows which preset
   the fleet is **actually running** (live vs. pending), plus a signed one-tap **clear-threats**
   command that wipes every decoy's stale detection history from the panel. **TURBO** is a field-use
-  flood mode, not a realism mode: every board independently maxes its own BLE and Wi-Fi churn — no
-  room-density matching — to raise the processing cost of whoever's watching. Manual-only, two-tap
+  flood mode, not a realism mode: every board independently maxes its own BLE and Wi-Fi churn - no
+  room-density matching - to raise the processing cost of whoever's watching. Manual-only, two-tap
   confirm on the console, sticky until changed.
 - **On-air fleet enrollment (ECDH):** decoys ship with no shared transport key and enroll on-air via
   a mutually-authenticated 3-message handshake, so **a captured decoy can't forge commands or
   impersonate the Vigil to other decoys.** It does end up holding the same shared fleet transport key
-  as every other member, though — see Security model below for what that key protects and doesn't.
-- **Vigil console:** an at-a-glance **protection posture** — one honest word for your current state
+  as every other member, though - see Security model below for what that key protects and doesn't.
+- **Vigil console:** an at-a-glance **protection posture** - one honest word for your current state
   (`CLOAKED` / `EXPOSED` when there's no crowd to hide in / `HUNTED` when a follower is confirmed /
-  `DARK`) — plus a live radar/threat display, grouped status pages, a per-node fleet roster, and
+  `DARK`) - plus a live radar/threat display, grouped status pages, a per-node fleet roster, and
   enroll/revoke control for fleet members. Tap in for depth: a **per-node telemetry console**, a
   **per-threat detail card** (device class, confidence, vendor, persistence), a two-page **system
-  console + colour legend**, and signed fleet control — all from the touch panel, no laptop.
+  console + colour legend**, and signed fleet control - all from the touch panel, no laptop.
 - **Fleet health at a glance:** decoys report TX self-health and battery state over the link, so
   Vigil surfaces a `DEGRADED` or `LOW BATT` node on its roster before it goes quiet in the field.
 
@@ -128,18 +128,18 @@ Roles are selected at build time so one firmware tree serves every board.
 - **Never trust the wire.** Every synced/seeded template is re-gated (budget + Law-3 + hash recompute)
   on receipt, so a leaked key or spoofed node still cannot inject a forbidden identity.
 - **The fleet transport key is shared and currently unencrypted at rest.** Every enrolled decoy holds
-  the same symmetric key that encrypts status/threat/learn-sync traffic on the mesh — this is what
+  the same symmetric key that encrypts status/threat/learn-sync traffic on the mesh - this is what
   lets nodes talk to each other and the Vigil at all, and it's a different key from the CONTROL
   signing key above. No flash/NVS encryption is configured on any board, so a physically recovered
   decoy's key is recoverable with `esptool read_flash`. **Revoke a lost or captured board immediately**
-  (fleet roster → REVOKE) — this rotates the whole fleet onto a new key and re-enrolls the survivors,
+  (fleet roster → REVOKE) - this rotates the whole fleet onto a new key and re-enrolls the survivors,
   cutting the compromised board out. Until you do, treat a missing decoy as a live risk to the mesh's
   confidentiality, not just a lost board.
 - **Structure-only learning.** Real-world captures are stripped to skeletons; no bystander identities
   or names are stored or emitted.
 - **Measured, not assumed.** A host-side audit suite compiles the *real* generator and scores how
-  separable the decoys are from a real crowd across every axis an adversary could use — address type,
-  advertising interval, vendor mix, AD structure, presence/lifespan, and RSSI — turning "are the
+  separable the decoys are from a real crowd across every axis an adversary could use - address type,
+  advertising interval, vendor mix, AD structure, presence/lifespan, and RSSI - turning "are the
   decoys convincing?" into a single regression-gate number instead of a hope.
 
 ## Hardware
@@ -153,13 +153,13 @@ every screen and setting on the Vigil console does once it's flashed, see the
 
 ## Build & flash
 
-### Flash from your browser — no toolchain (starter fleet)
+### Flash from your browser - no toolchain (starter fleet)
 
 The fastest way to try Simulacra:
 
 ### **→ [em3ritus.github.io/simulacra](https://em3ritus.github.io/simulacra/)**
 
-Open it in desktop **Chrome or Edge**, plug in a board, click **Connect & Flash** — the
+Open it in desktop **Chrome or Edge**, plug in a board, click **Connect & Flash** - the
 **browser web-flasher** (ESP Web Tools / Web Serial) auto-detects the chip and installs the right
 role (C5 → Ward, C6 → Shade, ESP32 → CYD), no ESP-IDF and no command line. It installs the
 **baked starter** regime (shared public key), so it's for trying Simulacra out, not a private
@@ -167,16 +167,16 @@ deployment. Source and self-host notes: [`web/`](web/).
 
 ### Build from source (full / provisioned regime)
 
-Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/) — v5.5 for the C5 decoy,
+Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/) - v5.5 for the C5 decoy,
 v5.4 for the C6 decoy and the Vigil (classic ESP32). With the IDF environment active:
 
 ```sh
-# Decoy (Ward / Shade) — from the repo root
+# Decoy (Ward / Shade) - from the repo root
 idf.py set-target esp32c5          # or esp32c6 for Shade
 idf.py -DSIMULACRA_ESPNOW=1 -DSIMULACRA_CONFIG_CTRL=1 -DSIMULACRA_FLEET_PROVISION=1 build
 idf.py -p <PORT> flash monitor
 
-# Vigil controller — from ./cyd
+# Vigil controller - from ./cyd
 cd cyd
 idf.py set-target esp32
 idf.py -DSIMULACRA_CONFIG_CTRL=1 -DSIMULACRA_FLEET_PROVISION=1 build
@@ -188,7 +188,7 @@ enrollment, self-test). See `docs/` for design specs and per-feature notes.
 
 **Fleet-key regime must match across the whole fleet.** With `-DSIMULACRA_FLEET_PROVISION=1`
 (shown above) the Vigil mints a random fleet key at first boot and grants it to decoys through
-enrollment — so decoys need the flag too, or they fall back to the baked compile-time key, never
+enrollment - so decoys need the flag too, or they fall back to the baked compile-time key, never
 receive the grant, and stay invisible to the controller even while healthy. To run the simpler
 baked-key regime instead, omit `-DSIMULACRA_FLEET_PROVISION=1` from **every** node (all then share
 the key in `components/simulacra_radar/radar_key.h`). Changing any `-D…` flag needs a clean build
@@ -197,7 +197,7 @@ the key in `components/simulacra_radar/radar_key.h`). Changing any `-D…` flag 
 **Rotate the CONTROL signing key before real use.** `-DSIMULACRA_CONFIG_CTRL=1` (shown above) is a
 separate keypair from the fleet-transport key: whoever holds it can sign presets and CLEAR THREATS
 commands for every node trusting the matching public key. The committed placeholder bytes
-(`cyd/main/sim_ctrl_sk.h.example`) are **public knowledge** — they're in this repo's git history —
+(`cyd/main/sim_ctrl_sk.h.example`) are **public knowledge** - they're in this repo's git history -
 so a fleet left on them has no real control-plane authentication. Regenerate before deploying
 anything you care about:
 
@@ -206,7 +206,7 @@ python tools/gen_ctrl_key.py       # rewrites the secret + public key headers
 ```
 
 then rebuild and reflash **every** board together (decoys bake the new public key, the Vigil the new
-secret) — a half-rotated fleet stops verifying.
+secret) - a half-rotated fleet stops verifying.
 
 ## Repository layout
 
@@ -220,7 +220,7 @@ tools/decoy_audit/        score how separable the BLE decoys are from a real cro
 tools/probe_audit/        verify Wi-Fi probe frames are archetype-faithful and Law-3 safe
 tools/radar_audit/        verify the Vigil console's render/control/fleet-status logic on the host
 tools/seq_gate/           post-flash check that each fake phone's 802.11 sequence stays independent
-web/                      browser web-flasher (ESP Web Tools) — flash a starter fleet with no toolchain
+web/                      browser web-flasher (ESP Web Tools) - flash a starter fleet with no toolchain
 docs/                     design specs, implementation plans, and the roadmap
 ```
 
@@ -229,59 +229,59 @@ docs/                     design specs, implementation plans, and the roadmap
 Simulacra's host tools compile the **real firmware code** (not reimplementations), so behaviour is
 verified against the same source that runs on-device:
 
-- **`tools/pcap_learn/`** — replay a BLE capture (`.pcap` or `.pcapng`) through the actual
+- **`tools/pcap_learn/`** - replay a BLE capture (`.pcap` or `.pcapng`) through the actual
   self-learning pipeline (validate structure-only learning, emit a seed library) and the tracker
   matcher with dwell/co-travel analysis.
-- **`tools/decoy_audit/`** — compile the real BLE generator on the host and score how separable the
+- **`tools/decoy_audit/`** - compile the real BLE generator on the host and score how separable the
   synthetic crowd is from a real capture, as a ranked scorecard plus a single regression-gate number.
-- **`tools/probe_audit/`** — byte-exact verification that the Wi-Fi probe frames match real-phone
+- **`tools/probe_audit/`** - byte-exact verification that the Wi-Fi probe frames match real-phone
   archetypes, and that directed-SSID probes only ever name generic **public** networks from a fixed
-  compiled-in pool — never one sourced from observed or local traffic.
-- **`tools/radar_audit/`** — compiles the Vigil console's own render/control/fleet-status code on the
+  compiled-in pool - never one sourced from observed or local traffic.
+- **`tools/radar_audit/`** - compiles the Vigil console's own render/control/fleet-status code on the
   host, so every screen (radar, node/threat detail, INFO console, CONTROL presets) and the fleet
   aggregation logic (stale-node pruning, threat dedup, live-vs-pending preset) are verified against
   the exact source that runs on the CYD.
-- **`tools/seq_gate/`** — a two-board post-flash gate confirming each fake phone keeps its own
+- **`tools/seq_gate/`** - a two-board post-flash gate confirming each fake phone keeps its own
   802.11 sequence counter after an IDF/toolchain bump.
 
 Each tool has its own README with build and run steps.
 
 ## Recent updates
 
-Newest first — full history in [`CHANGELOG.md`](CHANGELOG.md). Forward-looking milestones live in
+Newest first - full history in [`CHANGELOG.md`](CHANGELOG.md). Forward-looking milestones live in
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 - **Project wiki.** A full [CYD console guide + reference](https://github.com/Em3ritus/simulacra/wiki)
   (every screen, setting, preset, and status word explained) and a project-wide glossary, published
   and linked from the README.
 - **TURBO flood mode.** A sixth console preset for field use, not realism: trigger it fleet-wide
-  (two-tap confirm) and every board independently maxes its own BLE + Wi-Fi churn — no room-density
-  matching, no persona coupling — burning through as much identifier space as the hardware sustains.
+  (two-tap confirm) and every board independently maxes its own BLE + Wi-Fi churn - no room-density
+  matching, no persona coupling - burning through as much identifier space as the hardware sustains.
   Hardware-verified at both full 3-node-fleet and single-standalone-board (K=1) scale with zero radio
   TX errors.
 - **Vigil console, fully fleshed out.** The touch dashboard became a real operator console: a
   **per-node telemetry page**, a **per-threat detail card**, a two-page **INFO** system/fleet console
   with a colour/posture **legend**, **live-vs-pending preset** state (flags a `MIXED` fleet), and a
   signed, two-tap **CLEAR THREATS** control.
-- **Browser web-flasher — [live](https://em3ritus.github.io/simulacra/).** Flash a starter fleet
-  from a web page — ESP Web Tools over Web Serial, auto-detecting the board and installing the right
+- **Browser web-flasher - [live](https://em3ritus.github.io/simulacra/).** Flash a starter fleet
+  from a web page - ESP Web Tools over Web Serial, auto-detecting the board and installing the right
   role. A CI action builds the three firmwares and deploys the flasher to GitHub Pages on every
   firmware change, so no binaries ever live in git.
 
 ## Contributing
 
-**Issues welcome** — bug reports, questions, hardware requests. **PRs aren't being merged yet** — see
+**Issues welcome** - bug reports, questions, hardware requests. **PRs aren't being merged yet** - see
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for why and what to expect.
 
 ## Credits
 
-Originally forked from and built on [**0xXyc/splinter**](https://github.com/0xXyc/splinter) — the
+Originally forked from and built on [**0xXyc/splinter**](https://github.com/0xXyc/splinter) - the
 project that started the idea. Simulacra extends it into a multi-node, self-learning, fleet-managed
 system.
 
 ## License
 
 **[GNU GPL v3.0](LICENSE).** Simulacra is derived from [0xXyc/splinter](https://github.com/0xXyc/splinter),
-which carries no license file of its own — its author has confirmed directly that splinter was
+which carries no license file of its own - its author has confirmed directly that splinter was
 written for others to build on. The current codebase is almost entirely original work; the small
 remainder still tracing back to those early files is covered by that same permission.

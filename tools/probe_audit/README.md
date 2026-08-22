@@ -1,4 +1,4 @@
-# probe_audit — host verification for archetype probe requests
+# probe_audit - host verification for archetype probe requests
 
 Host-compiles the firmware's pure probe-frame builder (`main/probe_frame.c`) and checks that the
 injected 802.11 probe requests are **faithful to real modern phones** and **Law-3 safe**.
@@ -8,7 +8,7 @@ injected 802.11 probe requests are **faithful to real modern phones** and **Law-
 For each archetype (iPhone / Galaxy / Pixel / generic Android) × band (2.4 / 5 GHz):
 
 - valid probe request (frame control `40 00`, broadcast DA + BSSID);
-- **SSID IE present and wildcard (len 0)** — the Law-3 regression guard;
+- **SSID IE present and wildcard (len 0)** - the Law-3 regression guard;
 - DS-Parameter channel byte equals the requested channel;
 - capability-IE diversity (HT everywhere; VHT on 5 GHz; generic Android omits HE, iPhone carries it);
 - total length ≤ `PROBE_FRAME_MAX`;

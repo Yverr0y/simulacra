@@ -27,14 +27,14 @@ class PersonaBinding(unittest.TestCase):
         self.assertTrue(rows)
         for t, agents, personas in rows:
             self.assertEqual(agents, personas,
-                             f"t={t}: {agents} agents vs {personas} personas — "
+                             f"t={t}: {agents} agents vs {personas} personas - "
                              "one of them has an unpaired radio")
 
     def test_the_swing_actually_exercised_both_directions(self):
         """Guard the guard: if the glide never moved, equality above would be trivially true."""
         counts = {a for _, a, _ in personabind()}
         self.assertGreater(max(counts), min(counts) + 2,
-                           f"agent count barely moved ({sorted(counts)}) — test proves nothing")
+                           f"agent count barely moved ({sorted(counts)}) - test proves nothing")
 
     def test_coexist_task_couples_the_two_counts(self):
         """The behavioural test drives the coupling directly, so it passes whether or not the

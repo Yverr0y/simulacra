@@ -8,7 +8,7 @@
 // Load-or-create the NVS X25519 identity keypair; load the fleet key/epoch if present.
 void fleet_key_init(void);
 // True once a usable fleet transport key is available. (Always true when the
-// SIMULACRA_FLEET_PROVISION gate is off — the compile-time key is the fallback.)
+// SIMULACRA_FLEET_PROVISION gate is off - the compile-time key is the fallback.)
 bool fleet_key_have(void);
 // Current 32-byte fleet transport key. NULL only when provisioning is enabled and
 // no key has been enrolled yet. When the gate is off, returns SIMULACRA_ESPNOW_KEY.

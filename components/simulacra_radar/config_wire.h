@@ -15,7 +15,7 @@ typedef struct __attribute__((packed)) {
 #define CONFIG_WIRE_PAYLOAD_LEN (sizeof(config_cmd_t) + CONFIG_SIG_LEN)   // 66
 
 // Vigil: build payload = cmd || Ed25519_sig(nonce12 || cmd) with secret key sk[64].
-// nonce12 = salt(8) || counter(4 BE) — the SAME nonce radar_wire_seal will use (wire v3;
+// nonce12 = salt(8) || counter(4 BE) - the SAME nonce radar_wire_seal will use (wire v3;
 // see radar_wire.h/.c's make_nonce -- this comment described the pre-v3 salt(4)||counter(8)
 // layout and was never updated when the format changed).
 // Returns the payload length, or -1 on buffer/sign error.

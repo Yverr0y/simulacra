@@ -250,7 +250,7 @@ static void coexist_on_report(const uint8_t mac[6], int8_t rssi, uint16_t compan
     if (r == DETECT_CONFIRM) {
         // Everywhere else a bystander's MAC is hashed on ingest and never stored. This one line
         // would print it in full, which is defensible for a detector (you often want the MAC to go
-        // find the device) but is a deliberate exception to the project's own model — so it is a
+        // find the device) but is a deliberate exception to the project's own model - so it is a
         // build-time choice, not a default. Enable with -DSIMULACRA_LOG_THREAT_MAC=1.
 #if SIMULACRA_LOG_THREAT_MAC
         ESP_LOGW(TAG, "THREAT confirmed id=%04x vendor=0x%04x epochs=%u rssi=%d "
@@ -289,7 +289,7 @@ static inline void coexist_detect_led_tick(uint32_t now_ms) { (void)now_ms; }
 
 // Re-profile is split across ticks: _start opens the observation window and snapshots the model,
 // _finish runs when the window closes. In between, coexist_task keeps ticking churn, draining the
-// detector and injecting probes — none of which used to happen during the 15 s scan.
+// detector and injecting probes - none of which used to happen during the 15 s scan.
 static rf_model_t s_repro_prev;        // pre-window snapshot (static: ~1 KB, too big for the stack)
 static bool       s_repro_active;
 
@@ -398,7 +398,7 @@ static void coexist_task(void *arg)
         // Also held off while the re-profile scan is open. The scan used to block this whole task,
         // so it was implicitly Wi-Fi-silent; now that the tick keeps running, injecting during the
         // window would steal antenna time from the BLE scan (on Ward a 5 GHz excursion stops BLE TX
-        // outright) and the density we measure would come out low. Keep the measurement clean —
+        // outright) and the density we measure would come out low. Keep the measurement clean -
         // churn, the detector drain and threat persistence still run, which is the point.
         // s_turbo ORs into the gate: while turbo is active, fire on EVERY tick (COEX_TICK_MS = 250
         // ms) rather than waiting for the persona's normal wifi_period_ms (2-7s). This is the real
@@ -425,7 +425,7 @@ static void coexist_task(void *arg)
             }
             probe_agents_rotate_tick(now);        // intra-life MAC rotation: without this a persona
                                                   // holds ONE Wi-Fi MAC for its whole life while its
-                                                  // BLE RPA rotates — the mismatch is the tell.
+                                                  // BLE RPA rotates - the mismatch is the tell.
                                                   // probe_agents_lifecycle is standalone-only.
             if (n24) probe_inject_burst(ch24[hop24++ % n24]);        // 2.4 GHz (coex-arbitrated)
             if (p->use_5g && (++s_wifi_ctr % COEX_5G_EVERY == 0)) coexist_5g_excursion();

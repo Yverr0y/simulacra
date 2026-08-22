@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-// PRE-SHARED KEY for the ESP-NOW radar link. CHANGE ME before real use — both the decoy
+// PRE-SHARED KEY for the ESP-NOW radar link. CHANGE ME before real use - both the decoy
 // and the CYD must carry the SAME 32 bytes. This placeholder is intentionally not secret.
 static const uint8_t SIMULACRA_ESPNOW_KEY[32] = {
     0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07, 0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,

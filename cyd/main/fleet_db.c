@@ -1,5 +1,5 @@
 #include "fleet_db.h"
-#include "sim_ctrl_sk.h"          // SIMULACRA_CTRL_SK[64] — sealing-key material
+#include "sim_ctrl_sk.h"          // SIMULACRA_CTRL_SK[64] - sealing-key material
 #include "learn_db.h"             // reuse learn_db_derive_key (HKDF-SHA256)
 #include "mbedtls/gcm.h"
 #include "esp_random.h"

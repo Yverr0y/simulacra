@@ -150,7 +150,7 @@ class Lifecycle(unittest.TestCase):
         rows = sim(21, n=16, ticks=8000, tick_ms=1000)     # ~133 min simulated
         births = self.slot_births(rows)
         total_births = sum(len(v) for v in births.values())
-        self.assertGreater(total_births, 16, "no rebirths — population never turned over")
+        self.assertGreater(total_births, 16, "no rebirths - population never turned over")
 
     def test_lifetime_bounded_by_role(self):
         rows = sim(22, n=24, ticks=12000, tick_ms=1000)

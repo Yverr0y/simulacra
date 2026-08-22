@@ -1,6 +1,6 @@
 # docs/
 
-Two parallel trees, both kept. They differ by *when* and *how* they were written, not by status —
+Two parallel trees, both kept. They differ by *when* and *how* they were written, not by status -
 neither supersedes the other, and both describe shipped behaviour.
 
 | Tree | Period | What it holds |
@@ -9,7 +9,7 @@ neither supersedes the other, and both describe shipped behaviour.
 | `superpowers/{plans,specs}` | Jul 2026 → | Everything since, one document per change, written to a fixed plan → spec → implement shape. Newer work is here. |
 
 **Which one is authoritative?** The code is. Where a document and the source disagree, the source
-wins and the document is stale — these are records of intent at a point in time, not specifications
+wins and the document is stale - these are records of intent at a point in time, not specifications
 the firmware is validated against. The behavioural contracts that *are* enforced live in
 `main/churn_selftest.c` (on-target) and `tools/*/tests/` (host).
 

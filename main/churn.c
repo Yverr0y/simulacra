@@ -5,7 +5,7 @@
 #include "phantom.h"
 
 // Presenter state: which device index occupies each hardware instance, and the address last
-// applied there (so a rotation — same device, new address — triggers a single re-apply).
+// applied there (so a rotation - same device, new address - triggers a single re-apply).
 static int      s_occ_idx[CHURN_HW_INSTANCES];
 static uint8_t  s_occ_addr[CHURN_HW_INSTANCES][6];
 static uint32_t s_phase;

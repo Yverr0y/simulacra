@@ -31,7 +31,7 @@
 bool learn_strip(const uint8_t *ad, uint8_t len, uint16_t company,
                  learned_template_t *out);
 
-// (learn_shape_hash is declared in learn_record.h — shared with the Vigil librarian.)
+// (learn_shape_hash is declared in learn_record.h - shared with the Vigil librarian.)
 
 // Copy skeleton, rewrite rand_mask bytes with esp_random(), overwrite the name
 // region with a synthetic name, sample an interval in [itvl_min,itvl_max].

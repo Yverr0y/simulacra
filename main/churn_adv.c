@@ -12,7 +12,7 @@ static const char *TAG = "churn_adv";
 // ble_hs_hci_cmd_tx lives in a private NimBLE header (host/src/ble_hs_hci_priv.h) but is a
 // linkable (non-static) symbol; forward-declare it so we can issue the raw "LE Set Advertising
 // Set Random Address" HCI command directly. ble_gap_ext_adv_set_addr() rejects RPA-shaped
-// addresses (top-2-bits 01 / 0x40) with EINVAL — but real privacy phones advertise with exactly
+// addresses (top-2-bits 01 / 0x40) with EINVAL - but real privacy phones advertise with exactly
 // those. The controller transmits whatever 6 bytes we give it, so we set a validation-passing
 // static stub via the host API (which flips rnd_addr_set=1 so ext_adv_start won't overwrite the
 // address on enable) and then override the controller's adv-set random address with the real

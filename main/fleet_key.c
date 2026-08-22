@@ -6,7 +6,7 @@
 #include <stdio.h>
 
 #ifndef SIMULACRA_FLEET_PROVISION
-#include "radar_key.h"     // SIMULACRA_ESPNOW_KEY — compile-time fallback when the gate is off
+#include "radar_key.h"     // SIMULACRA_ESPNOW_KEY - compile-time fallback when the gate is off
 #endif
 
 static uint8_t  s_id_sk[32], s_id_pk[32];

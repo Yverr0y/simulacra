@@ -47,13 +47,13 @@ int radar_wire_seal(uint8_t *frame, size_t *frame_len, uint8_t type,
 // Verify + decrypt a frame. Returns 0 on success (type/payload/salt/counter filled), <0 if the
 // header/magic/tag is bad OR the plaintext would not fit in payload_cap bytes. The capacity is
 // checked BEFORE decryption (mbedtls writes plaintext before it compares the tag), so an
-// oversized frame can never overflow `payload` — pass sizeof(your buffer) and nothing else.
+// oversized frame can never overflow `payload` - pass sizeof(your buffer) and nothing else.
 int radar_wire_open(const uint8_t *frame, size_t frame_len, const uint8_t key[32],
                     uint8_t *out_type, uint8_t *payload, size_t payload_cap, size_t *payload_len,
                     uint8_t out_salt[RADAR_SALT_LEN], uint64_t *out_counter);
 
 // Replay gate for TELEMETRY: accept iff salt changed (peer reboot) or counter strictly newer.
-// Updates st. Deliberately forgiving — a rebooted peer must be able to resume, and the worst a
+// Updates st. Deliberately forgiving - a rebooted peer must be able to resume, and the worst a
 // replayed STATUS/LEARN frame can do is restate stale data.
 //
 // NOT SUFFICIENT FOR CONTROL. The salt-change branch accepts any unfamiliar salt, so an attacker
@@ -62,7 +62,7 @@ int radar_wire_open(const uint8_t *frame, size_t frame_len, const uint8_t key[32
 // use radar_replay_monotonic_ok against a floor persisted across reboots.
 bool radar_replay_ok(radar_replay_t *st, const uint8_t salt[RADAR_SALT_LEN], uint64_t counter);
 
-// Replay gate for CONTROL: strictly monotonic, salt-independent — no "peer rebooted" escape
+// Replay gate for CONTROL: strictly monotonic, salt-independent - no "peer rebooted" escape
 // hatch. *floor must be restored from non-volatile storage at boot and re-persisted whenever
 // this returns true, or a power-cycle reopens the replay window.
 //

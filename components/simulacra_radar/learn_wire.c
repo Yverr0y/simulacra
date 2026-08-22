@@ -63,7 +63,7 @@ bool learn_merge_wire(learned_template_t *store, size_t *count, size_t cap,
         learned_template_t *e = &store[idx];
         bool changed = false;
         if (rec->reinforce_count > e->reinforce_count) { e->reinforce_count = rec->reinforce_count; changed = true; }
-        e->last_seen_sweep = sweep_no;                   // freshness only — not a durable change
+        e->last_seen_sweep = sweep_no;                   // freshness only - not a durable change
         if (rec->itvl_min_ms < e->itvl_min_ms) { e->itvl_min_ms = rec->itvl_min_ms; changed = true; }
         if (rec->itvl_max_ms > e->itvl_max_ms) { e->itvl_max_ms = rec->itvl_max_ms; changed = true; }
         return changed;

@@ -10,7 +10,7 @@
 #define COL_EDGE     RGB565(0x2C,0x1E,0x45)   // hairline rules / rune borders
 #define COL_BONE     RGB565(0xEC,0xE5,0xD4)   // primary text
 #define COL_ASH      RGB565(0x85,0x79,0xA0)   // muted labels
-#define COL_ARCANE   RGB565(0xA4,0x5C,0xF5)   // accent — sigils / selection
+#define COL_ARCANE   RGB565(0xA4,0x5C,0xF5)   // accent - sigils / selection
 #define COL_CHANNEL  RGB565(0x4F,0xE0,0xB0)   // semantic: alive
 #define COL_WARD     RGB565(0xE6,0xA6,0x4F)   // semantic: warning / dormant
 #define COL_HUNTER   RGB565(0xF0,0x55,0x5F)   // semantic: detection

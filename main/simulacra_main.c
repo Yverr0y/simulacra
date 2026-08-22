@@ -1,4 +1,4 @@
-// Simulacra — BLE privacy / anti-tracking decoy (ESP-IDF + NimBLE), ESP32-C5/C6.
+// Simulacra - BLE privacy / anti-tracking decoy (ESP-IDF + NimBLE), ESP32-C5/C6.
 // Fork of Splinter by 0xXyc (Jacob Swiz).
 //
 // v2 builds a synthetic *population*: plausible-but-fake BLE devices that persist
@@ -18,7 +18,7 @@
 //
 // Dev / verification flags (set exactly one to 1 to override the default):
 //   SIMULACRA_PROBE=1   Wi-Fi-only probe injector (NimBLE not started)
-//   SIMULACRA_SNIFF=1   Wi-Fi probe sniffer — promiscuous capture, log counts
+//   SIMULACRA_SNIFF=1   Wi-Fi probe sniffer - promiscuous capture, log counts
 //                       (verification tool / M9 observe seed)
 //   SIMULACRA_OBSERVE=1 BLE-only ambient observe + model (never advertises)
 //   CHURN_SELFTEST=1    On-target host-logic self-test; radio idle, PASS/FAIL serial

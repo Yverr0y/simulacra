@@ -8,7 +8,7 @@
 bool learn_merge(learned_template_t *store, size_t *count, size_t cap,
                  const learned_template_t *rec, uint16_t sweep_no);
 
-// Like learn_merge, but a duplicate takes max(reinforce_count) instead of incrementing —
+// Like learn_merge, but a duplicate takes max(reinforce_count) instead of incrementing -
 // used on the wire-receive path so re-broadcasts don't inflate a shape's weight.
 // Returns true iff the store materially changed (insert, replace, weight raise, or
 // interval widen); a pure no-op duplicate returns false so callers can gate persistence.
@@ -16,7 +16,7 @@ bool learn_merge_wire(learned_template_t *store, size_t *count, size_t cap,
                       const learned_template_t *rec, uint16_t sweep_no);
 
 #ifndef LEARN_SYNC_TOP_N
-#define LEARN_SYNC_TOP_N 64          // smallest decoy store (Shade/C6) — a full-down fits every decoy
+#define LEARN_SYNC_TOP_N 64          // smallest decoy store (Shade/C6) - a full-down fits every decoy
 #endif
 
 // Copy the n strongest records (by reinforce_count, ties: newer last_seen_sweep) into out.

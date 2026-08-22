@@ -112,7 +112,7 @@ static void dev_spawn(ble_device_t *d, uint32_t now_ms)
     } else if (d->atype == BLE_ATYPE_RPA) {
         // RPA is always RESIDENT. Drawn into the transient band (2-12 min) an RPA device would
         // usually die before its 10-20 min rotation deadline, presenting an address whose top two
-        // bits advertise "I rotate" while it demonstrably never does — an inverted signal. Forcing
+        // bits advertise "I rotate" while it demonstrably never does - an inverted signal. Forcing
         // the long band is also the physically honest reading: RPA is phone/OS behaviour, and a
         // beacon that appears for four minutes is not a phone. NRPA keeps the full role mix (it
         // rotates every 1-10 min, so it rotates inside even a short life).
@@ -164,7 +164,7 @@ void ble_devices_set_count(int n, uint32_t now_ms)
 
 // Release a slot from its persona: it becomes an ordinary unbound device again, respawned with a
 // fresh identity so it does not linger as a phone-shaped advertiser that ble_devices_tick will
-// never age out (the tick skips bound slots — a slot left bound to a persona that no longer exists
+// never age out (the tick skips bound slots - a slot left bound to a persona that no longer exists
 // would advertise the same phone forever).
 void ble_device_unbind(int slot, uint32_t now_ms)
 {
@@ -189,7 +189,7 @@ void ble_devices_set_accel(float mult, uint32_t now_ms)
     // Ratio is measured against what the LIVE lifetimes were last scaled by, not against the
     // previous setting. The decay path calls this every 250 ms with a value that moves by ~0.4%,
     // so comparing consecutive settings would let each step fall under the epsilon and be dropped
-    // while the setting marched 3.0 -> 1.0 — the crowd would keep the accelerated lifetimes
+    // while the setting marched 3.0 -> 1.0 - the crowd would keep the accelerated lifetimes
     // forever. Against s_accel_applied the skipped fractions accumulate until they matter.
     float ratio = s_accel_applied / mult;
     if (ratio > 0.99f && ratio < 1.01f) return;       // not yet worth walking the array

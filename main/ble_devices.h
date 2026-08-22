@@ -35,11 +35,11 @@ void  ble_devices_tick(uint32_t now_ms);
 int   ble_devices_count(void);
 const ble_device_t *ble_devices_at(int i);
 // Live population resize (the runtime population-match knob). Grows by spawning fresh devices,
-// shrinks by dropping high slots — but never below the highest persona-bound slot.
+// shrinks by dropping high slots - but never below the highest persona-bound slot.
 void  ble_devices_set_count(int n, uint32_t now_ms);
 // Churn acceleration: lifetimes are divided by `mult` (clamped to [1,8]). Applies to devices born
 // later AND rescales the remaining life of live unbound devices, so a change takes effect now.
-// Idempotent — safe to call every tick with a slowly-decaying value.
+// Idempotent - safe to call every tick with a slowly-decaying value.
 void  ble_devices_set_accel(float mult, uint32_t now_ms);
 float ble_devices_accel(void);
 // TURBO mode: every freshly spawned device (init/grow/respawn-on-expiry) gets a short fixed

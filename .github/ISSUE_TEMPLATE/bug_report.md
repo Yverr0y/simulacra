@@ -7,7 +7,7 @@ assignees: ""
 ---
 
 **Board(s) and build path**
-Which board(s) — Ward (C5) / Shade (C6) / Vigil (CYD)? Flashed via the
+Which board(s) - Ward (C5) / Shade (C6) / Vigil (CYD)? Flashed via the
 [browser web-flasher](https://em3ritus.github.io/simulacra/) or built from source? If from source,
 which `-D…` build flags?
 

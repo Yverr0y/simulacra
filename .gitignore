@@ -7,15 +7,15 @@ sdkconfig.old
 managed_components/
 dependencies.lock
 
-# local-only session notes — never commit
+# local-only session notes - never commit
 HANDOFF.md
 
-# Vigil's Ed25519 CONTROL SECRET — whoever holds it can sign CONFIG commands (pause the
+# Vigil's Ed25519 CONTROL SECRET - whoever holds it can sign CONFIG commands (pause the
 # decoy, clear its threats) for every node trusting the matching public key. Build from
 # cyd/main/sim_ctrl_sk.h.example, then regenerate with tools/gen_ctrl_key.py.
 cyd/main/sim_ctrl_sk.h
 
-# local-only drop zone — anything here is NEVER committed (captures, reference
+# local-only drop zone - anything here is NEVER committed (captures, reference
 # data, notes, screenshots). Safe regardless of file extension.
 private/
 
@@ -30,7 +30,7 @@ private/
 *.pyc
 __pycache__/
 
-# editor / IDE folders (Visual Studio) — can embed absolute paths
+# editor / IDE folders (Visual Studio) - can embed absolute paths
 .vs/
 
 # git worktrees for isolated feature work (superpowers subagent-driven-development)

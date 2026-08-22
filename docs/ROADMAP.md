@@ -1,27 +1,27 @@
 # Roadmap
 
-> **Project:** **Simulacra** — a fork of [Splinter](https://github.com/0xXyc/splinter) by 0xXyc (Jacob Swiz), used with permission.
+> **Project:** **Simulacra** - a fork of [Splinter](https://github.com/0xXyc/splinter) by 0xXyc (Jacob Swiz), used with permission.
 >
 > A BLE/RF **anti-tracking decoy**: generate a synthetic population of plausible-but-fake
 > wireless devices that statistically matches the local RF environment but corresponds to
 > **no real device**, so your real devices stop standing out in the crowd.
 
-Each milestone must leave a **flashable, working device** — we extend the horizon, we don't
+Each milestone must leave a **flashable, working device** - we extend the horizon, we don't
 break what works.
 
 ## Design laws (every milestone respects these)
 
-1. **Aggregates only** — store distributions/templates, never per-device identifiers. Hash or
+1. **Aggregates only** - store distributions/templates, never per-device identifiers. Hash or
    drop real MACs, names, and payloads at capture time.
-2. **No verbatim replay** — synthesize new identities; never re-broadcast a captured real one.
-3. **Non-connectable only** — broadcast-only; never the Apple/Microsoft/Google pairing-popup
+2. **No verbatim replay** - synthesize new identities; never re-broadcast a captured real one.
+3. **Non-connectable only** - broadcast-only; never the Apple/Microsoft/Google pairing-popup
    payload formats.
-4. **Population-match** — the active fakes never far exceed the observed real device density.
-5. **No raw capture in shipping builds** — raw dumps live behind a compile-time debug flag.
+4. **Population-match** - the active fakes never far exceed the observed real device density.
+5. **No raw capture in shipping builds** - raw dumps live behind a compile-time debug flag.
 
 ---
 
-## Phase 1 — Foundation ✅ (M3 — done, hardware-verified on ESP32-C6)
+## Phase 1 - Foundation ✅ (M3 - done, hardware-verified on ESP32-C6)
 
 - Identity pool (256 synthetic identities) + churn engine: an active set of ~8, each on-air for
   minutes (dwell), then a 30–60 min cooldown, then **reappears with the same MAC**.
@@ -29,82 +29,82 @@ break what works.
 - Vendor templates (company ID + optional name) with tunable probabilities.
 - On-target self-test asserting the invariants (e.g. no identity reappears before cooldown).
 
-## Phase 2 — Realism (M4–M6)
+## Phase 2 - Realism (M4–M6)
 
-- **M4 — Per-vendor payload templates.** Structurally-valid payloads (iBeacon/Tile/fitness-band
+- **M4 - Per-vendor payload templates.** Structurally-valid payloads (iBeacon/Tile/fitness-band
   shaped); vendor + interval + payload sampled **jointly** so no impossible combinations occur.
-- **M5 — Observe → model.** Passive BLE scan + Wi-Fi promiscuous capture; extract **features
+- **M5 - Observe → model.** Passive BLE scan + Wi-Fi promiscuous capture; extract **features
   only**; hash-and-drop identifiers immediately; aggregate into a distribution model of the
   local environment. (Data-discipline laws bite hardest here.)
-- **M6 — Generate from model + population-match.** Roster drawn from the live model (vendor mix,
+- **M6 - Generate from model + population-match.** Roster drawn from the live model (vendor mix,
   intervals, payloads); active-set size driven by observed device density; re-profile on cadence.
 
-## Phase 3 — Multi-signal & power (M7–M8)
+## Phase 3 - Multi-signal & power (M7–M8)
 
-- **M7 — Wi-Fi probe injection.** Randomized-MAC probe-request frames mimicking real phone scanning.
-- **M8 — Coexistence & duty-cycle.** BLE advertise + BLE/Wi-Fi scan + Wi-Fi probe share the one
+- **M7 - Wi-Fi probe injection.** Randomized-MAC probe-request frames mimicking real phone scanning.
+- **M8 - Coexistence & duty-cycle.** BLE advertise + BLE/Wi-Fi scan + Wi-Fi probe share the one
   2.4 GHz radio without starving; battery-aware (e.g. don't re-profile while stationary); runs for
   days on a LiPo.
 
-## Phase 4 — Hardening / anti-correlation (M9+, the moonshot)
+## Phase 4 - Hardening / anti-correlation (M9+, the moonshot)
 
 *Aimed at fingerprinting + multi-modal correlation systems (e.g. ALPR-linked RF harvesting such as
-Leonardo ELSAG SignalTrace). Long-horizon and exploratory — but each step still ships a working
+Leonardo ELSAG SignalTrace). Long-horizon and exploratory - but each step still ships a working
 device. These specifically target the two layers a simple decoy can't beat: **RF fingerprinting**
 and **cross-modal correlation**.*
 
-- **M9 — The Coven (multi-node mesh).** Several coordinated nodes with **heterogeneous hardware**
+- **M9 - The Coven (multi-node mesh).** Several coordinated nodes with **heterogeneous hardware**
   so the decoys carry genuinely distinct hardware RF fingerprints *and*
   spatial / independent-motion diversity a single emitter physically cannot fake. The single
-  biggest hardening — one radio can't forge N fingerprints; many radios can.
-- **M10 — Cross-protocol personas.** Bind a BLE identity + a Wi-Fi identity (later sub-GHz) into
-  one synthetic "device" that emits consistently across protocols and appears/leaves together —
+  biggest hardening - one radio can't forge N fingerprints; many radios can.
+- **M10 - Cross-protocol personas.** Bind a BLE identity + a Wi-Fi identity (later sub-GHz) into
+  one synthetic "device" that emits consistently across protocols and appears/leaves together -
   defeating correlators that filter BLE-only ghosts. **Same-board v1 done 2026-07-16
   (`feat/cross-protocol-personas`, firmware compile-verified esp32c5+esp32c6). **Mesh-distributed
   personas landed 2026-07-17** (`-DSIMULACRA_FLEET_SIZE=K`): each node runs `1/K` of the population,
   so *whole personas are distributed across physically separated nodes* (each persona keeps its two
-  radios co-located, as a real phone does, but different personas originate from different points) —
+  radios co-located, as a real phone does, but different personas originate from different points) -
   spatial diversity of the *crowd*. The audit measures the win and it is **modest on real data**:
   modeled RSSI separability falls K=1 **0.15** → K=2 **0.14** → K=3 **0.12** (`scorecard.py
   --fleet-curve`), because the per-identity TX-power dither already closes most of the co-location
-  tell — the larger mesh benefit is `K` distinct RF fingerprints, which this axis does not measure.
-  Note: splitting a single persona's two radios across nodes would be wrong — it manufactures a
+  tell - the larger mesh benefit is `K` distinct RF fingerprints, which this axis does not measure.
+  Note: splitting a single persona's two radios across nodes would be wrong - it manufactures a
   "phone whose radios are metres apart" tell no real device has; the fix is crowd spatial diversity,
   not the pair.**
-- **M11 — Targeted mimicry (mimic ring).** Detect your own device(s) and generate decoys that
+- **M11 - Targeted mimicry (mimic ring).** Detect your own device(s) and generate decoys that
   clone their vendor/type, so your real device is one of many identical signatures instead of a
   unique one co-occurring with you.
-- **M12 — Sub-GHz / TPMS dimension.** A CC1101 add-on to flood decoy tire-pressure-sensor IDs —
+- **M12 - Sub-GHz / TPMS dimension.** A CC1101 add-on to flood decoy tire-pressure-sensor IDs -
   attacking a per-vehicle anchor that BLE/Wi-Fi noise can't touch. (Sub-GHz TX has its own
   regulatory weight; keep it low-power and deliberate.)
-- **M13 — Counter-surveillance scry.** Turn the sensing inward-out: detect active RF collection
+- **M13 - Counter-surveillance scry.** Turn the sensing inward-out: detect active RF collection
   (probe/scan-request emitters, collector signatures) and alert / adapt duty-cycle.
 
-## Honest ceilings (design around these — never overpromise)
+## Honest ceilings (design around these - never overpromise)
 
 - **Additive only.** It can't silence your real device. The strongest posture is Simulacra **+
   emission hygiene** (radios off / airplane mode / Faraday in transit; devices with good MAC *and*
   timing randomization; ditch always-on wearables).
-- **Can't touch non-RF / legal anchors** — a license plate, cellular identity.
-- **One radio can't forge N hardware fingerprints** — which is exactly why the Coven matters.
+- **Can't touch non-RF / legal anchors** - a license plate, cellular identity.
+- **One radio can't forge N hardware fingerprints** - which is exactly why the Coven matters.
   *The detectability audit now measures this physical (RSSI) tell directly (**done 2026-07-17**):
-  modeled single-node decoy RSSI is only ~0.15 separable from a real crowd — the per-identity
-  TX-power dither mitigates it well — but the ceiling stands; only spatially separated nodes (M9)
+  modeled single-node decoy RSSI is only ~0.15 separable from a real crowd - the per-identity
+  TX-power dither mitigates it well - but the ceiling stands; only spatially separated nodes (M9)
   truly beat it. This closes the audit's last discriminator axis (address / interval / vendor /
   AD-structure / presence / RSSI all done). Mesh v2 (`-DSIMULACRA_FLEET_SIZE=K`) now distributes the
   crowd across K nodes and the audit confirms it lowers the modeled separability (0.15 → ~0.12 at
-  K=3) — but the honest ceiling stands: **K nodes give K points, not one-per-device; the win is
+  K=3) - but the honest ceiling stands: **K nodes give K points, not one-per-device; the win is
   proportional to node count**, and modest here because the dither already did most of the work.*
 - **Decoys, not jamming.** Jamming and cellular spoofing are illegal and a different (worse) project.
 - **Realistic claim, even maxed out:** *raises the cost of and degrades automated / mass RF
-  correlation — especially as a heterogeneous multi-node mesh — not a guarantee against a targeted,
+  correlation - especially as a heterogeneous multi-node mesh - not a guarantee against a targeted,
   fingerprinting-grade adversary.*
 
 ## Hardware status
 
 - **In-hand fleet:** ESP32-**C5** (dual-band Wi-Fi 6) ×2, SparkFun Thing Plus ESP32-**C6**
   (onboard charging + MAX17048 fuel gauge) ×1, and an ESP32 "Cheap Yellow Display" (**Vigil**) ×1.
-- **Firmware builds + HW-validated:** **C6** (✅ verified) and **C5** (✅ HW-validated — extended
+- **Firmware builds + HW-validated:** **C6** (✅ verified) and **C5** (✅ HW-validated - extended
   advertising works; builds with `--preview`).
 - **Multi-node note:** the fleet can be physically separated for mesh work, but only one node is
   USB-tethered (flash + serial) at a time; a second runs headless on a powerbank, with Vigil as an

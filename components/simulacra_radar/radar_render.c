@@ -15,7 +15,7 @@
 #define COL_RING  COL_EDGE
 #define COL_OK    COL_CHANNEL
 #define COL_WARN  COL_HUNTER
-#define COL_SWEEP RGB565(0x3A,0x22,0x55)   // dim arcane — the radar sweep's trailing energy
+#define COL_SWEEP RGB565(0x3A,0x22,0x55)   // dim arcane - the radar sweep's trailing energy
 #define RCX 120
 #define RCY 120
 #define RR 100
@@ -41,9 +41,9 @@ static uint16_t posture_color(radar_posture_t p){
 
 __attribute__((unused)) static uint16_t threat_color(uint8_t ep){ return ep>=5?COL_HUNTER:(ep>=2?COL_WARD:COL_ARCANE); }
 static uint16_t escalation_color(detect_escalation_t e){
-    return e==ESCALATION_PERSISTENT ? COL_HUNTER   // red   — a confirmed follower
-         : e==ESCALATION_RECURRING  ? COL_WARD     // amber — seen across sessions
-                                    : COL_ARCANE;  // arcane — NEW this session
+    return e==ESCALATION_PERSISTENT ? COL_HUNTER   // red   - a confirmed follower
+         : e==ESCALATION_RECURRING  ? COL_WARD     // amber - seen across sessions
+                                    : COL_ARCANE;  // arcane - NEW this session
 }
 
 // Shared themed header for the text-data sub-views (STATS/DETAIL/LIBRARY/INFO). Matches HOME's top

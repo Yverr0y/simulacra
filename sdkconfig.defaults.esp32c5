@@ -1,4 +1,4 @@
-# ESP32-C5 (Bluetooth 5.0) overrides — merged on top of sdkconfig.defaults when
+# ESP32-C5 (Bluetooth 5.0) overrides - merged on top of sdkconfig.defaults when
 # the target is esp32c5.
 #
 # Enable extended advertising with the maximum number of concurrent advertising
@@ -11,11 +11,11 @@ CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4
 
 # Observe mode (M5 / the Ward persona): enable the NimBLE observer (scanning) role so
 # ble_gap_ext_disc() can passively profile the ambient environment. The C6 hit this exact
-# gap during M5 — without it, scanning silently returns no reports.
+# gap during M5 - without it, scanning silently returns no reports.
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 
 # Console on UART0: we flash/monitor through the DevKit's UART bridge port
-# (a CH343 USB-serial chip), which — unlike the native USB-Serial-JTAG — does not
+# (a CH343 USB-serial chip), which - unlike the native USB-Serial-JTAG - does not
 # re-enumerate when the chip resets, so flashing and logging are reliable (esp. in
 # a VM). The bridge's RTS/DTR drive EN/GPIO9 for auto-reset.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y

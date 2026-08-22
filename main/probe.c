@@ -36,7 +36,7 @@ static const char *TAG = "probe";
 #define PROBE_FIX_CH 0        // >0: pin injection to this channel; 0 = normal 1/6/11(+5G) hop
 #endif
 #ifndef PROBE_FORCE_SHARED
-#define PROBE_FORCE_SHARED 0  // 1: en_sys_seq=true (shared HW counter) — regression simulation only
+#define PROBE_FORCE_SHARED 0  // 1: en_sys_seq=true (shared HW counter) - regression simulation only
 #endif
 
 // Personas need one BLE slot each PLUS this many unbound BLE-only decoys so the static/NRPA/

@@ -4,7 +4,7 @@
 
 // nonce = salt(8) || counter(4 BE). Wire v3 rebalanced this from salt(4)||counter(8).
 //
-// GCM nonce reuse under a shared key is catastrophic — it leaks the XOR of two plaintexts AND the
+// GCM nonce reuse under a shared key is catastrophic - it leaks the XOR of two plaintexts AND the
 // GHASH authentication key, turning a confidentiality break into forgery. Uniqueness here rests on
 // the salt, which is redrawn every boot: with 4 bytes, a fleet sharing one key had even odds of a
 // collision after ~2^16 (device, boot) pairs, which a long-lived fleet reaches. 8 bytes moves that

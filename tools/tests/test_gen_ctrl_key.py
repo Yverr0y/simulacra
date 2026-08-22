@@ -79,7 +79,7 @@ class SecretStaysLocal(unittest.TestCase):
 
     def test_secret_is_not_tracked(self):
         self.assertNotEqual(git("ls-files", "--error-unmatch", SK).returncode, 0,
-                            f"{SK} is TRACKED — `git rm --cached {SK}`")
+                            f"{SK} is TRACKED - `git rm --cached {SK}`")
 
     def test_example_template_is_tracked(self):
         self.assertEqual(git("ls-files", "--error-unmatch", SK + ".example").returncode, 0,

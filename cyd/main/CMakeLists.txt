@@ -2,8 +2,8 @@
 # sim_ctrl_sk.h. Fail with an actionable message rather than a bare "no such file".
 if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/sim_ctrl_sk.h")
     message(FATAL_ERROR
-        "cyd/main/sim_ctrl_sk.h is missing (it is gitignored — it holds the Vigil signing secret).\n"
-        "  Bring-up:  cp cyd/main/sim_ctrl_sk.h.example cyd/main/sim_ctrl_sk.h   (PUBLIC key — no control auth)\n"
+        "cyd/main/sim_ctrl_sk.h is missing (it is gitignored - it holds the Vigil signing secret).\n"
+        "  Bring-up:  cp cyd/main/sim_ctrl_sk.h.example cyd/main/sim_ctrl_sk.h   (PUBLIC key - no control auth)\n"
         "  Deploy:    python tools/gen_ctrl_key.py                               (fresh keypair; reflash all boards)")
 endif()
 
