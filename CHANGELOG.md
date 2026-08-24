@@ -3,6 +3,17 @@
 Newest first. Forward-looking milestones live in [`docs/ROADMAP.md`](docs/ROADMAP.md). The README's
 own "Recent updates" section keeps only the latest few entries - this is the full history.
 
+- **Additive fleet population + AUTO/MANUAL modes.** Decoys used to run `1/K` of one fleet-wide
+  crowd, so adding a board redistributed cover instead of adding it. That division was introduced to
+  fix a real measured problem (three boards once put 88 synthetic devices into a room holding 4-9
+  real ones), but it was justified partly on spatial diversity the boards never get in practice -
+  they travel together in one bag. Each board now sizes its own crowd from the ambient density it
+  measures, and boards add up. The preset ladder is replaced by two orthogonal modes: **AUTO**
+  tracks the room and honours an operator-set cap; **MANUAL** LOW/MED/HIGH pins a fixed fraction of
+  each board's capacity. This also retires the STEALTH/NORMAL pair, which resolved to identical
+  settings on the C5 and could not be told apart on the console. CONFIG wire goes to v2 (the preset
+  ordinals changed meaning, so a mixed-firmware fleet now fails loudly instead of silently applying
+  the wrong preset) - **flash every board together.** Hardware-verified on the 3-node fleet.
 - **Project wiki.** A full [CYD console guide + reference](https://github.com/Em3ritus/simulacra/wiki)
   (every screen, setting, preset, and status word explained) and a project-wide glossary, published
   and linked from the README.

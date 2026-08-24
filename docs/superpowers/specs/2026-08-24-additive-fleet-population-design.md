@@ -62,8 +62,26 @@ Per board, with no fleet-size term anywhere:
 ```
 base   = round(pop_ewma * GEN_FACTOR)                    // C5 1.5x, C6 1.1x (unchanged)
 target = auto_scale ? base : preset_level                // AUTO follows ambient; MANUAL does not
-target = clamp(target, SIM_TARGET_FLOOR, min(auto_cap, BLE_DEVICES_MAX))
+target = clamp(target, floor, min(auto_cap, BLE_DEVICES_MAX))
+         // floor = 2 * SIM_PERSONA_MIN for AUTO, SIM_TARGET_FLOOR for MANUAL -- see below
 ```
+
+**Floor correction (amended 2026-08-24 after hardware testing).** The AUTO floor reserves room for
+`SIM_PERSONA_MIN` (4) personas, **not** the board's designed persona count. Flooring on the designed
+count was tried first and failed on hardware: the C5 has 16 designed personas which, at the crowd/2
+anti-monoculture cap, require 32 devices - the board's entire budget - so floor, ceiling, and
+`BLE_DEVICES_MAX` all collapsed onto 32 and AUTO had **zero range**. A three-board bench fleet
+radiated 88 decoys into a room holding 4-9 real devices: exactly the H8 density tell this design
+claims to keep closed, reproduced on the first flash.
+
+The principle the original floor encoded - "personas are a design constant of the node, not a
+property of the room" - does not survive contact with population-match. A room with almost nothing
+in it should not contain sixteen fake phones. The crowd shrinks with the room, personas included;
+the existing crowd/2 cap scales them back up as ambient density rises. The floor's remaining job is
+narrow: guarantee the cross-protocol (BLE+Wi-Fi bound) layer never disappears entirely.
+
+Measured on the real 3-board fleet, same room, before and after this correction: **88 -> 28 total**
+(8/12/8), against 27 under the old per-node division.
 
 Fleet total is simply the sum of what each board independently decides. Boards will disagree
 slightly on ambient (they measure independently); this is accepted and requires no reconciliation.
@@ -203,6 +221,17 @@ reasoning, not measurement. The Kismet re-capture is what would actually prove i
 **required follow-up, not an optional one**. The specific scenario to check is the one H8 was found
 in: a device-sparse home environment with the full fleet running, confirming AUTO collapses the crowd
 to something plausible rather than stacking N boards' worth of decoys into an empty room.
+
+**The detectability scorecard cannot substitute for that capture.** `tools/decoy_audit/run.ps1`
+generates a fixed 256-device population and scores its *shape*; it never calls
+`generate_active_target` and therefore cannot observe a change to crowd *sizing*. Running it before
+and after this work yields an identical headline (0.1526, `ad_structure`) by construction, not by
+evidence. Do not read that number as validation of the density question.
+
+The bench run already proved the risk is live rather than hypothetical: the first hardware flash of
+this design put 88 decoys into a near-empty room (see the floor correction above). The mitigation
+now measures 28 in the same room, but that is one static reading in one environment, taken from
+serial logs rather than from an attacker's-eye capture.
 
 Secondary: `BLE_DEVICES_MAX` (32) saturates at roughly `pop_ewma >= 21` on the C5. Above that, added
 boards - not ambient density - are the only thing that increases fleet population. This is expected

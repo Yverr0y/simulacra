@@ -79,7 +79,10 @@ raise the volume of traffic someone has to process. The same rules above apply t
 | **Shade** | ESP32-C6 | Mobile / everyday-carry decoy - lean, 2.4 GHz, low-profile |
 | **Vigil** | ESP32 + "Cheap Yellow Display" | Controller & librarian - radar/status screen, touch control, encrypted SD library, fleet key custody |
 
-Roles are selected at build time so one firmware tree serves every board.
+Roles are selected at build time so one firmware tree serves every board. **ESP32-C5 (Ward) is the
+suggested board to start with** - dual-band, and it takes and charges its own battery - so a
+minimal build is one C5 + one Vigil. ESP32-C6 (Shade) remains fully supported for anyone who wants
+the lower-power/everyday-carry variant.
 
 ## Features
 
@@ -101,13 +104,19 @@ Roles are selected at build time so one firmware tree serves every board.
   published, non-secret placeholder constant - an accepted tradeoff for that regime, matching its
   documented "shared key, not private" posture elsewhere.
 - **Passive follower detection** and **tracker/surveillance fingerprint** matching.
-- **Signed fleet control:** Vigil pushes Ed25519-signed behaviour presets (PAUSE / STEALTH /
-  NORMAL / DENSE / MAX / **TURBO**) to every decoy over ESP-NOW - and the console shows which preset
-  the fleet is **actually running** (live vs. pending), plus a signed one-tap **clear-threats**
-  command that wipes every decoy's stale detection history from the panel. **TURBO** is a field-use
-  flood mode, not a realism mode: every board independently maxes its own BLE and Wi-Fi churn - no
-  room-density matching - to raise the processing cost of whoever's watching. Manual-only, two-tap
-  confirm on the console, sticky until changed.
+- **Signed fleet control:** Vigil pushes Ed25519-signed behaviour presets to every decoy over
+  ESP-NOW, in two modes. **AUTO** sizes each board's crowd from the ambient device density it
+  measures, so the fleet matches the room it's actually in; an operator-set cap bounds how far it
+  can scale. **MANUAL** (LOW / MED / HIGH) pins a fixed fraction of each board's capacity and
+  ignores the room. The console shows which preset the fleet is **actually running** (live vs.
+  pending), plus a signed one-tap **clear-threats** command that wipes every decoy's stale detection
+  history from the panel. **TURBO** is a field-use flood mode, not a realism mode: every board
+  independently maxes its own BLE and Wi-Fi churn - no room-density matching - to raise the
+  processing cost of whoever's watching. Manual-only, two-tap confirm, sticky until changed.
+- **Boards are additive.** Each decoy sizes its own crowd independently, so adding a board adds
+  cover rather than redistributing it, while AUTO's density matching keeps the *fleet* honest in a
+  sparse room. Every board also carries its own set of hardware advertising slots, which is the real
+  limit on how fast fresh identities reach the air.
 - **On-air fleet enrollment (ECDH):** decoys ship with no shared transport key and enroll on-air via
   a mutually-authenticated 3-message handshake, so **a captured decoy can't forge commands or
   impersonate the Vigil to other decoys.** It does end up holding the same shared fleet transport key
@@ -144,7 +153,10 @@ Roles are selected at build time so one firmware tree serves every board.
 
 ## Hardware
 
-- **ESP32-C5** (Ward) and **ESP32-C6** (Shade) decoys.
+- **ESP32-C5** (Ward) - the suggested/primary decoy board. Dual-band Wi-Fi 6, and it takes and
+  charges its own LiPo battery.
+- **ESP32-C6** (Shade) - fully supported alternative decoy, leaner and lower-power for
+  everyday-carry.
 - **ESP32** "Cheap Yellow Display" (ILI9341 + XPT2046 touch + microSD) for Vigil.
 
 Specific boards and part numbers: see [`web/README.md`](web/README.md)'s board table. For what
