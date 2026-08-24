@@ -253,6 +253,13 @@ int main(int argc, char **argv) {
         printf("%d\n", uniq_try(a) ? 1 : 0);   // 0 = routed (recorded), 1 = not routed
         return 0;
     }
+    if (argc > 1 && strcmp(argv[1], "--acttarget") == 0) {
+        rf_model_t m; memset(&m, 0, sizeof m);
+        m.pop_ewma = argc > 2 ? (float)strtod(argv[2], 0) : 0.0f;
+        m.sweeps   = 1;
+        printf("%u\n", (unsigned)generate_active_target(&m));
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "--devices") == 0) {
         unsigned seed   = argc > 2 ? (unsigned)strtoul(argv[2], 0, 10) : 1;
         int      ndev   = argc > 3 ? (int)strtoul(argv[3], 0, 10) : 16;

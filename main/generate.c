@@ -1,7 +1,7 @@
 #include <string.h>
 #include "generate.h"
 #include "templates.h"
-#include "churn.h"          // CHURN_ACTIVE_SET
+#include "ble_devices.h"    // BLE_DEVICES_MAX: the real bound on the crowd (static array size)
 #include "roster.h"         // make_random_static_addr_pub
 #include "learn.h"          // learned templates (self-learning)
 #include "esp_random.h"
@@ -13,11 +13,9 @@ static const char *TAG = "generate";
 #if CONFIG_IDF_TARGET_ESP32C5
 #define GEN_FACTOR_X10 15   // Ward: 1.5x
 #define GEN_FLOOR      6
-#define GEN_CEILING    16
 #else
 #define GEN_FACTOR_X10 11   // Shade: 1.1x
 #define GEN_FLOOR      4
-#define GEN_CEILING    8
 #endif
 
 // interval bin [lo,hi) edges in ms; the >2000 bin caps at 3000.
@@ -229,12 +227,17 @@ size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
     return built;
 }
 
+// Ambient-derived crowd size for THIS board. No fleet-size divisor: boards are additive, each
+// sizing itself from what it measures (see 2026-08-24-additive-fleet-population-design.md).
+// The old GEN_CEILING (16/8) and CHURN_ACTIVE_SET (16) clamps are gone -- CHURN_ACTIVE_SET is the
+// legacy scale that settings.c already documents as having broken the crowd on hardware when
+// conflated with the real crowd size, and it capped this path far below any real environment
+// (measured ambient runs 44-529 devices/min). BLE_DEVICES_MAX is the real bound: the static array.
 uint8_t generate_active_target(const rf_model_t *m)
 {
     int t = (int)((m->pop_ewma * GEN_FACTOR_X10 + 5) / 10);   // round(pop*factor)
     if (t < GEN_FLOOR) t = GEN_FLOOR;
-    if (t > GEN_CEILING) t = GEN_CEILING;
-    if (t > CHURN_ACTIVE_SET) t = CHURN_ACTIVE_SET;
+    if (t > BLE_DEVICES_MAX) t = BLE_DEVICES_MAX;
     return (uint8_t)t;
 }
 
