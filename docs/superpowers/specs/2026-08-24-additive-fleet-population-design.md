@@ -121,10 +121,25 @@ Worked example, 4 boards, cap 96:
 - `coexist.c:450` - Wi-Fi probe-agent glide target
 - `settings.c:34,43` - `sim_settings_ceiling()` / `sim_settings_floor()`
 
-**Delete `main/fleet_pop.{c,h}` entirely.** Nothing consumes the K census afterward. Leaving
-`fleet_pop_share()` live but uncalled reproduces the DRIFT-1/DRIFT-2 pattern this project has
-already been bitten by (no-op setters retaining active callers). `fleet_pop_refresh()` and the
-census-change resize hook in `coexist.c:360-370` go with it.
+**Keep `main/fleet_pop.{c,h}`, remove its callers.** After this change nothing in the population
+path consumes the K census, but the module is retained deliberately - the live node count remains
+useful telemetry and the spatial-deployment option is not being permanently foreclosed at the code
+level, only at the product level. The census-change resize hook in `coexist.c:360-370` is removed
+along with the four `fleet_pop_share` call sites; `fleet_pop_refresh()` may stay wired to the
+coexist tick so the cached census stays current for any future consumer.
+
+**This leaves a module with no callers, which needs an explicit guard.** The DRIFT-1/DRIFT-2 pattern
+this project has been bitten by is not unused code per se - it is code that *looks* live, retains
+callers, and silently does nothing, so operator-facing surfaces report behaviour the firmware is not
+performing. To keep this retention from decaying into that:
+
+- `fleet_pop.h` must carry a header comment stating plainly that it is retained-but-unused as of
+  2026-08-24, that population is additive and no longer divided by K, and that any future caller is
+  reintroducing fleet-size coupling deliberately rather than restoring an assumed default.
+- No firmware surface (status wire, console, logs) may report a value derived from
+  `fleet_pop_size()` while nothing acts on it.
+- A `decoy_audit` test asserts the population path contains no `/K` term, so a future edit cannot
+  quietly reintroduce division through this module without failing a test.
 
 **Retire the stale ceilings in `generate_active_target()` (`generate.c:232-239`):** drop the
 `CHURN_ACTIVE_SET` clamp and `GEN_CEILING`; the binding limits become `BLE_DEVICES_MAX` and
