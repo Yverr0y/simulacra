@@ -141,19 +141,20 @@ static void simulacra_task(void *arg)
     // to the coordinator (it owns churn_tick + Wi-Fi bursts + re-profile). roster_init()
     // MUST precede churn_init(): churn pulls identities straight from the roster pool.
     roster_init();
-    int fleet_k = fleet_pop_size();                 // K nodes share the crowd (default 1 = standalone)
-    int ndev = fleet_pop_share(12);                 // fallback density -> this node's share
+    // No fleet divisor: this board sizes its crowd from its own ambient estimate and boards are
+    // additive (2026-08-24). Nothing here depends on how many peers are on the mesh.
+    int ndev = 12;                                  // fallback density until a model is loaded
     {
         rf_model_t m;
         if (rf_model_load_nvs(&m) == 0 && m.total_obs >= GEN_MIN_OBS) {
-            uint8_t at = (uint8_t)fleet_pop_share(generate_active_target(&m));  // node's share of observed density
+            uint8_t at = generate_active_target(&m);            // this board's own ambient estimate
             churn_set_active_target(at);
             ndev = (int)at;
-            ESP_LOGW(TAG, "population-match: pop=%u fleet_k=%d active_target=%u",
-                     (unsigned)(m.pop_ewma + 0.5f), fleet_k, (unsigned)at);
+            ESP_LOGW(TAG, "population-match: pop=%u active_target=%u",
+                     (unsigned)(m.pop_ewma + 0.5f), (unsigned)at);
         }
     }
-    int ble_floor = fleet_pop_share(probe_desired_ble_floor());   // floor scales with the persona share
+    int ble_floor = probe_desired_ble_floor();      // room for this board's personas + twins
     if (ndev < ble_floor) ndev = ble_floor;                      // room for this node's personas + twins
     if (ndev < (int)sim_settings_floor()) ndev = sim_settings_floor();   // and for the persona cap
     ble_devices_init(ndev, (uint32_t)(esp_timer_get_time() / 1000));  // population size; clamped to max
@@ -161,7 +162,7 @@ static void simulacra_task(void *arg)
     // (task creation is a memory barrier). All phantom_lifecycle/sync_* thereafter run only on the
     // coexist tick, so the phantom state has a single writer -> no lock needed. Binding is deferred
     // to the first coexist tick (phantom_sync_wifi/ble), after probe_agents_init / ble_devices_init.
-    phantom_init(fleet_pop_share(probe_phone_target()), (uint32_t)(esp_timer_get_time() / 1000));
+    phantom_init(probe_phone_target(), (uint32_t)(esp_timer_get_time() / 1000));
     churn_set_apply(churn_adv_apply);
     churn_init((uint32_t)(esp_timer_get_time() / 1000));
     sim_settings_init();   // restore persisted churn tunables (or firmware defaults)

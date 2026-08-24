@@ -317,20 +317,26 @@ static void coexist_reprofile_finish(const coexist_persona_t *p)
         ESP_LOGW(TAG, "epoch -> %u (drift=%.3f)", (unsigned)s_epoch, score);
     }
     roster_reseed(cur);                                     // fresh room-matched behaviour library
-    // Room density flexes the crowd, but never below what this node's designed persona count needs
-    // (personas are capped at half the crowd, so N personas require 2N devices). GEN_CEILING caps
-    // the density estimate at 8 on Shade / 16 on Ward, which on its own would shrink the crowd to
-    // the point where personas get squeezed out -- the phones we present are a design constant of
-    // the node, not a property of the room; it is the unbound beacons/tags that should flex.
-    // generate_active_target estimates the density of the WHOLE room; this node presents its 1/K
-    // share of it. The boot path already did this and the re-profile did not, so the crowd snapped
-    // back to a full standalone-sized population at the first re-profile.
-    uint8_t at = (uint8_t)fleet_pop_share(generate_active_target(cur));
-    uint8_t floor_n = sim_settings_floor();
-    if (at < floor_n) at = floor_n;
-    churn_set_active_target(at);                            // resize to the new population
-    ESP_LOGW(TAG, "reprofile: drift=%.3f active_target=%u (floor %u, fleet_k %d)",
-             score, (unsigned)at, (unsigned)floor_n, fleet_pop_size());
+    // Room density flexes the crowd, but in AUTO never below what this node's designed persona
+    // count needs (personas are capped at half the crowd, so N personas require 2N devices) -- the
+    // phones we present are a design constant of the node, not a property of the room; it is the
+    // unbound beacons/tags that should flex.
+    //
+    // No fleet divisor: each board sizes itself from its OWN measurement and boards are additive
+    // (2026-08-24). A MANUAL level is the operator's explicit choice and must survive this tick --
+    // without the auto_scale gate the re-profile would silently clobber it within 10 min on Ward.
+    if (sim_settings_auto_scale()) {
+        uint8_t at = generate_active_target(cur);
+        uint8_t floor_n = sim_settings_floor();
+        if (at < floor_n) at = floor_n;
+        uint8_t cap = sim_settings_auto_cap();
+        if (cap && at > cap) at = cap;
+        churn_set_active_target(at);                        // resize to the new population
+        ESP_LOGW(TAG, "reprofile: drift=%.3f active_target=%u (floor %u, cap %u)",
+                 score, (unsigned)at, (unsigned)floor_n, (unsigned)cap);
+    } else {
+        ESP_LOGW(TAG, "reprofile: drift=%.3f (manual mode, crowd unchanged)", score);
+    }
     if (prev.sweeps > 0) coexist_handle_drift(p, score);   // skip day-one false trigger (empty prev model)
 }
 
@@ -357,17 +363,8 @@ static void coexist_task(void *arg)
     uint32_t hop24 = 0;
     for (;;) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-        fleet_pop_refresh(now);                         // live node census -> everyone's 1/K share
-        {   // A node joining or leaving changes everyone's share; resize now rather than waiting
-            // for the next re-profile (up to 10 min on Ward).
-            static int s_last_k = -1;
-            int k = fleet_pop_size();
-            if (k != s_last_k) {
-                if (s_last_k >= 0) ESP_LOGW(TAG, "fleet census %d -> %d nodes; resizing crowd", s_last_k, k);
-                s_last_k = k;
-                if (!s_turbo) sim_settings_recalc_bounds();   // turbo's bounds aren't K-relative
-            }
-        }
+        // The census-change resize hook that lived here is gone: population no longer depends on
+        // the node count, so a peer joining or leaving does not change this board's crowd size.
         coexist_drain_requests();                       // control commands land here, not on the
         churn_tick(now);                                // caller's task (single-writer discipline)
         if (s_turbo) {                                  // re-assert: a radio re-init (probe_pool_init
@@ -446,12 +443,10 @@ static void coexist_task(void *arg)
             s_repro_active = false;
             coexist_reprofile_finish(p);                            // BLE population-match (may early-return)
             int wt      = s_wifi_obs_ok ? wifi_obs_target(now) : WIFI_OBS_FALLBACK;
-            int k       = fleet_pop_live_size(now);                 // live fleet size (peers heard + self)
-            int agents  = fleet_pop_share_k(wt, k);                 // this node's share of the crowd target
+            int agents  = wt;                                       // additive: no fleet divisor
             probe_agents_glide_set_target(agents, now);             // glide toward it (boot-instant first time)
-            // Log the APPLIED target + the divisor so the live census is observable (wt is pre-division).
-            ESP_LOGW(TAG, "wifi popmatch: density=%d wt=%d /nodes=%d -> agents=%d%s",
-                     s_wifi_obs_ok ? wifi_obs_density(now) : -1, wt, k, agents,
+            ESP_LOGW(TAG, "wifi popmatch: density=%d -> agents=%d%s",
+                     s_wifi_obs_ok ? wifi_obs_density(now) : -1, agents,
                      s_wifi_obs_ok ? "" : " (fallback)");
         }
         if (s_listen_ch >= 0 && s_wifi_ok && s_wifi_allowed && !observe_window_active())

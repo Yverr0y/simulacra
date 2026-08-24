@@ -17,9 +17,16 @@ uint8_t sim_settings_ceiling(void);
 // node, not a property of the room.
 uint8_t sim_settings_floor(void);
 
+// AUTO scales the crowd with measured ambient density; the MANUAL levels name a fixed fraction of
+// this board's ceiling and ignore the room. TURBO is HIGH's device count without the realism --
+// personas released, max churn (coexist_set_turbo owns that, bypassing floor/ceiling entirely).
+//
+// ORDINALS ARE A WIRE CONTRACT (config_wire.h, CONFIG_WIRE_VER 2). Changing the order silently
+// remaps every preset a Vigil sends. Reordering requires a wire version bump and a whole-fleet
+// reflash, not just an edit here.
 typedef enum {
-    SIM_PRESET_PAUSE = 0, SIM_PRESET_STEALTH, SIM_PRESET_NORMAL,
-    SIM_PRESET_DENSE, SIM_PRESET_MAX, SIM_PRESET_TURBO, SIM_PRESET_COUNT
+    SIM_PRESET_PAUSE = 0, SIM_PRESET_AUTO, SIM_PRESET_LOW,
+    SIM_PRESET_MED, SIM_PRESET_HIGH, SIM_PRESET_TURBO, SIM_PRESET_COUNT
 } sim_preset_t;
 
 // Every field here drives live behaviour - nothing is stored for display only. The CYD infers the
@@ -31,6 +38,12 @@ typedef struct {
     float    accel;                               // lifetime divisor: >1.0 = faster arrivals/departures
     bool     turbo;                                // TURBO active: coexist_set_turbo owns the REAL
                                                    // population/churn rate, bypassing floor/ceiling
+    bool     auto_scale;                          // AUTO: the re-profile tick drives active_target
+                                                  // from measured ambient density. When false a
+                                                  // manual level sticks -- without this flag the
+                                                  // re-profile would clobber it within 10 min.
+    uint8_t  auto_cap;                            // AUTO upper bound (this board's share of the
+                                                  // operator's fleet-wide cap). 0 = uncapped.
 } sim_settings_t;
 
 // Pure: resolve preset p to concrete settings between `floor` and `ceiling`, already clamped.
@@ -62,3 +75,8 @@ sim_preset_t sim_settings_current_preset(void);
 void sim_settings_set(const sim_settings_t *s);
 // Current pause state (convenience for the web UI toggle; avoids exposing the struct).
 bool sim_settings_get_paused(void);
+
+// AUTO mode active? The re-profile tick must not overwrite active_target when this is false.
+bool    sim_settings_auto_scale(void);
+// Current AUTO upper bound (0 = uncapped). Applied by the re-profile after the ambient estimate.
+uint8_t sim_settings_auto_cap(void);

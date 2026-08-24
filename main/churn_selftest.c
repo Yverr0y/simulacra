@@ -1483,17 +1483,14 @@ static void test_escalation_recurrence(void)
 static void test_settings_resolve(void)
 {
     sim_settings_t s;
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_NORMAL, 4, 16, &s) == 0, "resolve NORMAL ok");
-    ST_CHECK(s.active_target == 16 && !s.paused && s.accel == 1.0f, "NORMAL fills ceiling, running");
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_AUTO, 4, 16, &s) == 0, "resolve AUTO ok");
+    ST_CHECK(s.auto_scale && !s.paused && s.accel == 1.0f, "AUTO scales with the room, running");
 
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_STEALTH, 4, 16, &s) == 0, "resolve STEALTH ok");
-    ST_CHECK(s.active_target == 6 && s.accel == 1.0f, "STEALTH ~40% ceiling, unhurried turnover");
-
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_MAX, 4, 16, &s) == 0, "resolve MAX ok");
-    ST_CHECK(s.active_target == 16 && s.accel > 2.0f, "MAX cranks turnover");
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_HIGH, 4, 16, &s) == 0, "resolve HIGH ok");
+    ST_CHECK(s.active_target == 16 && !s.auto_scale, "HIGH fills the ceiling, ignores the room");
 
     ST_CHECK(sim_settings_resolve(SIM_PRESET_PAUSE, 4, 16, &s) == 0, "resolve PAUSE ok");
-    ST_CHECK(s.paused && s.active_target == 16, "PAUSE freezes rotation, crowd stays on-air");
+    ST_CHECK(s.paused && s.auto_scale, "PAUSE freezes rotation, crowd stays on-air");
 
     ST_CHECK(sim_settings_resolve(SIM_PRESET_COUNT, 4, 16, &s) == -1, "bad preset rejected");
 
@@ -1503,13 +1500,24 @@ static void test_settings_resolve(void)
     ST_CHECK(bad.active_target >= SIM_TARGET_FLOOR, "clamp raises target to floor");
     ST_CHECK(bad.accel <= 4.0f, "clamp bounds accel");
 
-    // The persona floor wins over a preset that would shrink the crowd below it: personas are a
-    // design constant and are capped at half the population, so squeezing the crowd would starve
-    // them out and leave an all-phone monoculture (or no personas at all).
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_STEALTH, 24, 32, &s) == 0 && s.active_target == 24,
-             "STEALTH raised to the persona floor");
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_NORMAL, 24, 32, &s) == 0 && s.active_target == 32,
-             "NORMAL still fills the ceiling above the floor");
+    // MANUAL levels are ordered and DISTINCT, and the persona floor must NOT raise them. On the C5
+    // that floor equals the ceiling, so clamping against it collapsed LOW/MED onto HIGH -- exactly
+    // the STEALTH==NORMAL collision the AUTO/MANUAL split exists to remove (2026-08-24).
+    {
+        sim_settings_t lo, me, hi;
+        ST_CHECK(sim_settings_resolve(SIM_PRESET_LOW,  24, 32, &lo) == 0, "LOW resolves");
+        ST_CHECK(sim_settings_resolve(SIM_PRESET_MED,  24, 32, &me) == 0, "MED resolves");
+        ST_CHECK(sim_settings_resolve(SIM_PRESET_HIGH, 24, 32, &hi) == 0, "HIGH resolves");
+        ST_CHECK(lo.active_target < me.active_target, "LOW is smaller than MED");
+        ST_CHECK(me.active_target < hi.active_target, "MED is smaller than HIGH");
+        ST_CHECK(hi.active_target == 32, "HIGH is the board ceiling");
+        ST_CHECK(lo.active_target < 24, "the persona floor does NOT raise a MANUAL level");
+        ST_CHECK(!lo.auto_scale && !me.auto_scale && !hi.auto_scale, "manual levels are not auto");
+    }
+
+    // AUTO, by contrast, IS floored: room-driven resizing must not starve the designed personas.
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_AUTO, 24, 32, &s) == 0 && s.active_target >= 24,
+             "AUTO is raised to the persona floor");
     {
         sim_settings_t low = { .active_target = 1, .paused = false, .accel = 1.0f };
         sim_settings_clamp(&low, 24, 32);
@@ -1517,7 +1525,17 @@ static void test_settings_resolve(void)
     }
 
     // Ceiling honored on a smaller board (Shade-like ceiling).
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_MAX, 4, 8, &s) == 0 && s.active_target == 8, "MAX clamps to board ceiling");
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_HIGH, 4, 8, &s) == 0 && s.active_target == 8,
+             "HIGH clamps to board ceiling");
+
+    // Every preset must round-trip through match_preset, or the console lies about the mode.
+    // PAUSE and AUTO both set auto_scale and are separated only by `paused` -- a regression there
+    // would report a paused fleet that is actually churning.
+    for (sim_preset_t p = SIM_PRESET_PAUSE; p < SIM_PRESET_COUNT; p++) {
+        sim_settings_t r;
+        if (sim_settings_resolve(p, 4, 16, &r) != 0) continue;
+        ST_CHECK(sim_settings_match_preset(&r, 4, 16) == p, "every preset round-trips");
+    }
 }
 
 static void test_settings_apply(void)
@@ -1530,19 +1548,18 @@ static void test_settings_apply(void)
     // running NORMAL is the same failure class as a forged command, just self-inflicted.
     //
     // Bounds are read from the board (floor/ceiling), never hardcoded: the two differ per target
-    // (C5 32/32, C6 16/24), and on a board where the designed personas consume the whole budget
-    // STEALTH legitimately cannot shrink at all.
-    sim_settings_apply_preset(SIM_PRESET_STEALTH);
-    ST_CHECK(!churn_paused(), "STEALTH is running");
-    ST_CHECK(churn_active_target() >= fl, "STEALTH never starves the personas");
-    ST_CHECK(churn_active_target() <= ce, "STEALTH never exceeds the ceiling");
-    ST_CHECK(churn_accel() == 1.0f, "STEALTH leaves turnover at the designed rate");
-    uint8_t stealth_n = churn_active_target();
+    // (C5 32/32, C6 16/24). MANUAL levels are deliberately NOT floored at the persona budget --
+    // an operator asking for LOW means LOW, and coexist caps personas at crowd/2 so they shrink.
+    sim_settings_apply_preset(SIM_PRESET_LOW);
+    ST_CHECK(!churn_paused(), "LOW is running");
+    ST_CHECK(churn_active_target() >= SIM_TARGET_FLOOR, "LOW never goes below the absolute floor");
+    ST_CHECK(churn_active_target() <= ce, "LOW never exceeds the ceiling");
+    ST_CHECK(churn_accel() == 1.0f, "LOW leaves turnover at the designed rate");
+    uint8_t low_n = churn_active_target();
 
-    sim_settings_apply_preset(SIM_PRESET_MAX);
-    ST_CHECK(churn_active_target() == ce, "MAX actually refills the crowd to the ceiling");
-    ST_CHECK(churn_active_target() >= stealth_n, "MAX is never smaller than STEALTH");
-    ST_CHECK(churn_accel() > 2.0f, "MAX actually accelerates turnover");
+    sim_settings_apply_preset(SIM_PRESET_HIGH);
+    ST_CHECK(churn_active_target() == ce, "HIGH actually refills the crowd to the ceiling");
+    ST_CHECK(churn_active_target() > low_n, "HIGH is strictly larger than LOW (no collision)");
 
     // TURBO bypasses the fleet-share ceiling/floor entirely: the board's OWN hardware max, not the
     // K-shared value `ce` above. Also: no persona coupling (turbo releases any bound personas), and
@@ -1556,14 +1573,18 @@ static void test_settings_apply(void)
     ST_CHECK(phantom_count() == 0, "TURBO releases any bound personas");
     ST_CHECK(sim_settings_current_preset() == SIM_PRESET_TURBO, "display correctly infers TURBO");
 
-    sim_settings_apply_preset(SIM_PRESET_NORMAL);
+    sim_settings_apply_preset(SIM_PRESET_AUTO);
     ST_CHECK(sim_settings_current_preset() != SIM_PRESET_TURBO, "leaving TURBO actually turns it off");
-    ST_CHECK(churn_active_target() <= ce, "population returns to the fleet-shared ceiling after TURBO");
+    ST_CHECK(churn_active_target() <= ce, "population returns to the board ceiling after TURBO");
 
-    // The property the floor exists for: NO preset can shrink the crowd below the persona budget.
+    // The property the persona floor exists for, now scoped to AUTO: ROOM-driven resizing must
+    // never starve the designed personas. MANUAL levels are excluded deliberately -- they are an
+    // explicit operator choice, not a property of the room (see sim_settings_floor).
     for (sim_preset_t p = SIM_PRESET_PAUSE; p < SIM_PRESET_COUNT; p++) {
+        sim_settings_t r;
+        if (sim_settings_resolve(p, fl, ce, &r) != 0 || !r.auto_scale) continue;
         sim_settings_apply_preset(p);
-        ST_CHECK(churn_active_target() >= fl, "every preset keeps room for the designed personas");
+        ST_CHECK(churn_active_target() >= fl, "every AUTO preset keeps room for the designed personas");
     }
 
     sim_settings_apply_preset(SIM_PRESET_PAUSE);
@@ -1574,11 +1595,16 @@ static void test_settings_apply(void)
     sim_settings_t g; sim_settings_get(&g);
     ST_CHECK(g.paused, "get reflects last applied (PAUSE)");
 
-    // Preset inference (wire-v2 live-preset reporting): apply -> report the same preset.
-    sim_settings_apply_preset(SIM_PRESET_MAX);
-    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_MAX, "current_preset reports MAX after apply");
-    sim_settings_apply_preset(SIM_PRESET_STEALTH);
-    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_STEALTH, "current_preset reports STEALTH after apply");
+    // Preset inference (live-preset reporting): apply -> report the same preset.
+    sim_settings_apply_preset(SIM_PRESET_HIGH);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_HIGH, "current_preset reports HIGH after apply");
+    sim_settings_apply_preset(SIM_PRESET_LOW);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_LOW, "current_preset reports LOW after apply");
+    // AUTO and PAUSE share auto_scale; the console must still tell them apart.
+    sim_settings_apply_preset(SIM_PRESET_AUTO);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_AUTO, "current_preset reports AUTO, not PAUSE");
+    sim_settings_apply_preset(SIM_PRESET_PAUSE);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_PAUSE, "current_preset reports PAUSE, not AUTO");
     {
         sim_settings_t custom; sim_settings_get(&custom);
         custom.accel = 1.75f;                         // a value no preset resolves to
@@ -1586,8 +1612,8 @@ static void test_settings_apply(void)
         ST_CHECK(sim_settings_current_preset() == SIM_PRESET_COUNT, "granular settings report CUSTOM");
     }
 
-    // Restore NORMAL so subsequent tests run with defaults.
-    sim_settings_apply_preset(SIM_PRESET_NORMAL);
+    // Restore AUTO so subsequent tests run with defaults.
+    sim_settings_apply_preset(SIM_PRESET_AUTO);
 }
 
 static void test_config_wire(void)

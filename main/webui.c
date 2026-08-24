@@ -188,9 +188,9 @@ static esp_err_t h_control(httpd_req_t *r)
     if (!action_of(body, act, sizeof act)) return httpd_resp_send_500(r);
 
     static const struct { const char *name; sim_preset_t preset; } PRESETS[] = {
-        { "preset_stealth", SIM_PRESET_STEALTH }, { "preset_normal", SIM_PRESET_NORMAL },
-        { "preset_dense",   SIM_PRESET_DENSE   }, { "preset_max",    SIM_PRESET_MAX    },
-        { "preset_pause",   SIM_PRESET_PAUSE   },
+        { "preset_auto",  SIM_PRESET_AUTO }, { "preset_low",   SIM_PRESET_LOW   },
+        { "preset_med",   SIM_PRESET_MED  }, { "preset_high",  SIM_PRESET_HIGH  },
+        { "preset_pause", SIM_PRESET_PAUSE },
     };
     // Requests are queued for the coexist tick, never applied on the HTTP task: presets resize the
     // BLE population and clear_threats memsets the detector table, both of which coexist_task is
@@ -203,7 +203,7 @@ static esp_err_t h_control(httpd_req_t *r)
 
     if      (strcmp(act, "detect_toggle") == 0) detect_set_enabled(!detect_enabled());
     else if (strcmp(act, "churn_toggle")  == 0) coexist_request_preset((uint8_t)(
-                                                    sim_settings_get_paused() ? SIM_PRESET_NORMAL : SIM_PRESET_PAUSE));
+                                                    sim_settings_get_paused() ? SIM_PRESET_AUTO : SIM_PRESET_PAUSE));
     else if (strcmp(act, "clear_threats") == 0) coexist_request_preset(CONFIG_CLEAR_THREATS);
     else if (strcmp(act, "done")          == 0) s_window_done = true;
     else if (strcmp(act, "reboot")        == 0) { httpd_resp_sendstr(r, "{\"ok\":1}"); esp_restart(); }
