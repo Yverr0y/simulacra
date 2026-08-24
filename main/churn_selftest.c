@@ -1515,9 +1515,14 @@ static void test_settings_resolve(void)
         ST_CHECK(!lo.auto_scale && !me.auto_scale && !hi.auto_scale, "manual levels are not auto");
     }
 
-    // AUTO, by contrast, IS floored: room-driven resizing must not starve the designed personas.
+    // AUTO IS floored, but on the MINIMUM viable persona count, not the designed one -- the floor
+    // must leave real range between itself and the ceiling or AUTO cannot track the room at all.
     ST_CHECK(sim_settings_resolve(SIM_PRESET_AUTO, 24, 32, &s) == 0 && s.active_target >= 24,
              "AUTO is raised to the persona floor");
+    ST_CHECK(sim_settings_floor() < sim_settings_ceiling(),
+             "AUTO has range on this board: floor must be strictly below the ceiling");
+    ST_CHECK(sim_settings_floor() >= 2 * SIM_PERSONA_MIN,
+             "AUTO floor still hosts the minimum personas at the crowd/2 cap");
     {
         sim_settings_t low = { .active_target = 1, .paused = false, .accel = 1.0f };
         sim_settings_clamp(&low, 24, 32);

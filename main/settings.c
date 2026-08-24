@@ -35,17 +35,16 @@ uint8_t sim_settings_ceiling(void)
     return (uint8_t)c;
 }
 
-// Lower bound for AUTO ONLY: enough devices to host this node's designed persona count (personas
-// are capped at half the crowd, so N personas need 2N devices). This guards ROOM-driven resizing
-// from squeezing out the phones, which are a design constant of the node.
+// Lower bound for AUTO ONLY: enough devices to host SIM_PERSONA_MIN personas at the crowd/2 cap,
+// so the cross-protocol layer never vanishes entirely. It is NOT the board's designed persona
+// count -- see SIM_PERSONA_MIN in settings.h for why that pinned the C5 at floor == ceiling and
+// put 88 decoys into a near-empty room on hardware (2026-08-24).
 //
-// It deliberately does NOT bind a MANUAL level. On the C5 this returns 32 -- identical to the
-// ceiling -- so clamping LOW/MED against it would raise them straight back to HIGH, recreating the
-// preset collision this design exists to remove. An operator asking for LOW means LOW, and coexist
-// already caps personas at crowd/2 so they shrink to fit. See sim_settings_resolve.
+// It deliberately does NOT bind a MANUAL level either: an operator asking for LOW means LOW, and
+// coexist already caps personas at crowd/2 so they shrink to fit. See sim_settings_resolve.
 uint8_t sim_settings_floor(void)
 {
-    int f = 2 * probe_phone_target();
+    int f = 2 * SIM_PERSONA_MIN;
     if (f > BLE_DEVICES_MAX) f = BLE_DEVICES_MAX;
     if (f < SIM_TARGET_FLOOR) f = SIM_TARGET_FLOOR;
     return (uint8_t)f;
@@ -76,10 +75,13 @@ int sim_settings_resolve(sim_preset_t p, uint8_t floor, uint8_t ceiling, sim_set
                          .turbo = false, .auto_scale = false, .auto_cap = 0 };
     uint8_t eff_floor = SIM_TARGET_FLOOR;
     switch (p) {
+    // AUTO/PAUSE record the floor rather than the ceiling: sim_settings_apply does not push a
+    // target in auto_scale mode (the re-profile owns it), so this value is only ever a recorded
+    // lower bound. Recording the ceiling here made a stale read look like "run at maximum".
     case SIM_PRESET_PAUSE:                                  // AUTO values, rotation frozen
-        s.auto_scale = true; s.paused = true; eff_floor = floor; break;
+        s.auto_scale = true; s.paused = true; s.active_target = floor; eff_floor = floor; break;
     case SIM_PRESET_AUTO:
-        s.auto_scale = true; eff_floor = floor; break;      // the re-profile owns active_target
+        s.auto_scale = true; s.active_target = floor; eff_floor = floor; break;
     case SIM_PRESET_LOW:
         s.active_target = (uint8_t)((ceiling * 25) / 100); break;
     case SIM_PRESET_MED:
@@ -100,7 +102,11 @@ int sim_settings_resolve(sim_preset_t p, uint8_t floor, uint8_t ceiling, sim_set
 
 void sim_settings_apply(const sim_settings_t *s)
 {
-    churn_set_active_target(s->active_target);
+    // In AUTO the re-profile owns the crowd size exclusively -- applying a resolved target here
+    // would stomp the ambient estimate. That is not theoretical: at boot the ambient path sets the
+    // target from the room (pop=5 -> 8 on a C5), then sim_settings_init applied AUTO and slammed it
+    // straight back to the ceiling (32), where it sat until the next re-profile up to 10 min later.
+    if (!s->auto_scale) churn_set_active_target(s->active_target);
     churn_set_paused(s->paused);
     churn_set_accel(s->accel);
     coexist_set_turbo(s->turbo);

@@ -4,6 +4,20 @@
 
 #define SIM_TARGET_FLOOR 4   // absolute minimum crowd, whatever the board
 
+// Minimum personas the crowd must be able to host, used to derive the AUTO floor.
+//
+// This is the MINIMUM VIABLE persona count, deliberately NOT the board's designed count
+// (probe_phone_target(), 16 on C5 / 8 on C6). Flooring on the designed count made floor == ceiling
+// on the C5 -- 16 personas at the crowd/2 cap need 32 devices, which is the entire budget -- so
+// AUTO had no range at all and a bench fleet radiated 88 decoys into a room holding 4-9 real
+// devices, exactly the density tell population-match exists to close.
+//
+// A room with almost nothing in it should not contain sixteen fake phones. The crowd shrinks with
+// the room, personas included; the existing crowd/2 cap in coexist scales them back up as ambient
+// density rises. This floor only guarantees the cross-protocol (BLE+Wi-Fi bound) layer never
+// disappears entirely.
+#define SIM_PERSONA_MIN 4
+
 // This board's designed crowd size (personas + unbound companions) -- the ceiling every preset
 // resolves against. NOT CHURN_ACTIVE_SET, which is a different, smaller scale.
 uint8_t sim_settings_ceiling(void);

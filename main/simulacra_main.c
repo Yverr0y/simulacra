@@ -154,15 +154,23 @@ static void simulacra_task(void *arg)
                      (unsigned)(m.pop_ewma + 0.5f), (unsigned)at);
         }
     }
-    int ble_floor = probe_desired_ble_floor();      // room for this board's personas + twins
-    if (ndev < ble_floor) ndev = ble_floor;                      // room for this node's personas + twins
-    if (ndev < (int)sim_settings_floor()) ndev = sim_settings_floor();   // and for the persona cap
+    // Floor on the MINIMUM viable persona count, not the designed one. Flooring at
+    // probe_desired_ble_floor() here pinned the C5 to its full 32 at every boot regardless of what
+    // the room looked like, which is how a bench fleet came to radiate 88 decoys into a room
+    // holding 4-9 real devices. Room-matching has to be allowed to shrink the crowd.
+    if (ndev < (int)sim_settings_floor()) ndev = sim_settings_floor();
     ble_devices_init(ndev, (uint32_t)(esp_timer_get_time() / 1000));  // population size; clamped to max
     // Create the persona registry HERE, on simulacra_task, BEFORE coexist_start spawns coexist_task
     // (task creation is a memory barrier). All phantom_lifecycle/sync_* thereafter run only on the
     // coexist tick, so the phantom state has a single writer -> no lock needed. Binding is deferred
     // to the first coexist tick (phantom_sync_wifi/ble), after probe_agents_init / ble_devices_init.
-    phantom_init(probe_phone_target(), (uint32_t)(esp_timer_get_time() / 1000));
+    // Personas must fit the crowd we just sized: they are capped at half the population (the
+    // anti-monoculture rule), so a sparse-room crowd hosts proportionally fewer. The coexist tick
+    // re-derives this every pass; this is just the boot-instant value.
+    int nph = probe_phone_target();
+    if (nph > ndev / 2) nph = ndev / 2;
+    if (nph < 1) nph = 1;
+    phantom_init(nph, (uint32_t)(esp_timer_get_time() / 1000));
     churn_set_apply(churn_adv_apply);
     churn_init((uint32_t)(esp_timer_get_time() / 1000));
     sim_settings_init();   // restore persisted churn tunables (or firmware defaults)
