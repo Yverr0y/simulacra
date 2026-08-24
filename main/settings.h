@@ -58,7 +58,11 @@ void sim_settings_clamp(sim_settings_t *s, uint8_t floor, uint8_t ceiling);
 // Apply settings to the churn engine now (no persistence).
 void sim_settings_apply(const sim_settings_t *s);
 // Resolve preset against sim_settings_ceiling(), clamp, apply, and persist. 0 ok, -1 unknown.
+// Equivalent to sim_settings_apply_preset_capped(p, 0) -- i.e. AUTO uncapped.
 int  sim_settings_apply_preset(sim_preset_t p);
+// As above, but also stores `cap` as the AUTO upper bound (0 = uncapped). The cap bounds AUTO only;
+// MANUAL levels name their own target. 0 ok, -1 unknown preset.
+int  sim_settings_apply_preset_capped(sim_preset_t p, uint8_t cap);
 // Load persisted settings from NVS (or firmware defaults) and apply. Call once at boot.
 void sim_settings_init(void);
 // Re-clamp live settings to the current board bounds (which follow the live node census) and

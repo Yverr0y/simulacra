@@ -3,16 +3,22 @@
 #include <stddef.h>
 
 #define RADAR_TYPE_CONFIG 7          // Vigil -> all decoys: signed settings preset
-#define CONFIG_WIRE_VER   1
+// v2 (2026-08-24): + cap byte, and the sim_preset_t ordinals changed meaning (STEALTH/NORMAL/
+// DENSE/MAX -> AUTO/LOW/MED/HIGH). A v1 Vigil sending STEALTH(1) would be read as AUTO(1) by a v2
+// decoy, so the version check on receipt is what keeps a mixed fleet loud instead of silently
+// misapplying commands. Flash the WHOLE fleet together.
+#define CONFIG_WIRE_VER   2
 #define CONFIG_SIG_LEN    64
 #define CONFIG_CLEAR_THREATS 0xFF    // preset_id sentinel: wipe the decoy threat table (not a preset)
 
 typedef struct __attribute__((packed)) {
     uint8_t version;                 // CONFIG_WIRE_VER
     uint8_t preset_id;               // sim_preset_t value (validated on the decoy)
+    uint8_t cap;                     // AUTO upper bound, this board's share (0 = uncapped).
+                                     // Ignored for MANUAL presets, which name their own level.
 } config_cmd_t;
 
-#define CONFIG_WIRE_PAYLOAD_LEN (sizeof(config_cmd_t) + CONFIG_SIG_LEN)   // 66
+#define CONFIG_WIRE_PAYLOAD_LEN (sizeof(config_cmd_t) + CONFIG_SIG_LEN)   // 67
 
 // Vigil: build payload = cmd || Ed25519_sig(nonce12 || cmd) with secret key sk[64].
 // nonce12 = salt(8) || counter(4 BE) - the SAME nonce radar_wire_seal will use (wire v3;

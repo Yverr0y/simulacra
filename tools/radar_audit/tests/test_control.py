@@ -18,10 +18,12 @@ class ControlLivePending(unittest.TestCase):
         self.assertTrue(any("PENDING" in t for t in texts), f"drew: {texts}")
 
     def test_live_name_and_pending_box(self):
-        texts = control(sel=2, live=4)          # live MAX, pending NORMAL
-        self.assertTrue(any("MAX" in t for t in texts), f"live name; drew: {texts}")
-        self.assertTrue(any("NORMAL" in t for t in texts), f"pending box; drew: {texts}")
-        self.assertIn("balanced", texts, f"selected-preset desc; drew: {texts}")
+        # Preset names changed 2026-08-24 with the AUTO/MANUAL split (ordinals 1-4 went
+        # STEALTH/NORMAL/DENSE/MAX -> AUTO/LOW/MED/HIGH). sel=2 is LOW, live=4 is HIGH.
+        texts = control(sel=2, live=4)          # live HIGH, pending LOW
+        self.assertTrue(any("HIGH" in t for t in texts), f"live name; drew: {texts}")
+        self.assertTrue(any("LOW" in t for t in texts), f"pending box; drew: {texts}")
+        self.assertIn("quarter crowd", texts, f"selected-preset desc; drew: {texts}")
 
     def test_send_when_pending_differs(self):
         self.assertIn("SEND", control(sel=2, live=4), "should read SEND when live!=pending")
@@ -36,6 +38,28 @@ class ControlLivePending(unittest.TestCase):
     def test_none_live(self):
         texts = control(sel=2, live=255)
         self.assertNotIn("ACTIVE", texts, f"none must not be ACTIVE; drew: {texts}")
+
+
+@unittest.skipUnless(os.path.exists(EXE), "render_dump not built")
+class ControlPresetLabels(unittest.TestCase):
+    """CTRL_LABELS is indexed by sim_preset_t, so its ORDER is a wire contract
+    (config_wire.h, CONFIG_WIRE_VER 2). A reorder here silently remaps every preset a
+    Vigil sends to the fleet. See main/settings.h's enum comment."""
+
+    EXPECTED = ["PAUSE", "AUTO", "LOW", "MED", "HIGH", "TURBO"]
+
+    def test_each_ordinal_renders_its_label(self):
+        for ordinal, label in enumerate(self.EXPECTED):
+            texts = control(sel=ordinal, live=255)
+            self.assertTrue(any(f"[ {label} ]" == t for t in texts),
+                            f"ordinal {ordinal} should render {label}; drew: {texts}")
+
+    def test_retired_presets_are_gone(self):
+        for ordinal in range(len(self.EXPECTED)):
+            texts = control(sel=ordinal, live=255)
+            for gone in ("STEALTH", "NORMAL", "DENSE"):
+                self.assertFalse(any(gone in t for t in texts),
+                                 f"retired preset {gone} still rendered at {ordinal}: {texts}")
 
 
 @unittest.skipUnless(os.path.exists(EXE), "render_dump not built")

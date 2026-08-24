@@ -1621,7 +1621,13 @@ static void test_config_wire(void)
     uint8_t pk[32], sk[64];
     crypto_sign_keypair(pk, sk);                       // ephemeral test keypair
     uint8_t nonce[12]; for (int i=0;i<12;i++) nonce[i] = (uint8_t)(i*7+1);
-    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = 3 };
+    // Wire v2 layout is a fleet-wide contract: a v1 Vigil sends STEALTH(1) and a v2 decoy would
+    // read AUTO(1). Pin the size so a struct edit cannot silently desync a fleet.
+    ST_CHECK(sizeof(config_cmd_t) == 3, "config_cmd_t is 3 bytes in wire v2");
+    ST_CHECK(CONFIG_WIRE_PAYLOAD_LEN == 67, "config payload is cmd(3) + sig(64)");
+    ST_CHECK(CONFIG_WIRE_VER == 2, "config wire version is 2");
+
+    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = 3, .cap = 24 };
 
     uint8_t pl[CONFIG_WIRE_PAYLOAD_LEN];
     int n = config_wire_pack_signed(pl, sizeof pl, &cmd, nonce, sk);
@@ -1630,6 +1636,7 @@ static void test_config_wire(void)
     config_cmd_t got;
     ST_CHECK(config_wire_open_signed(pl, n, nonce, pk, &got) == 0, "open verifies good sig");
     ST_CHECK(got.preset_id == 3 && got.version == CONFIG_WIRE_VER, "open recovers cmd");
+    ST_CHECK(got.cap == 24, "open recovers the AUTO cap");
 
     pl[0] ^= 0x01;                                      // tamper cmd byte
     ST_CHECK(config_wire_open_signed(pl, n, nonce, pk, &got) != 0, "tampered cmd fails verify");

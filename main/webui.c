@@ -197,14 +197,14 @@ static esp_err_t h_control(httpd_req_t *r)
     // concurrently reading.
     for (size_t i = 0; i < sizeof PRESETS / sizeof PRESETS[0]; i++)
         if (strcmp(act, PRESETS[i].name) == 0) {
-            coexist_request_preset((uint8_t)PRESETS[i].preset);
+            coexist_request_preset((uint8_t)PRESETS[i].preset, 0);   // web UI does not set a cap
             return httpd_resp_sendstr(r, "{\"ok\":1}");
         }
 
     if      (strcmp(act, "detect_toggle") == 0) detect_set_enabled(!detect_enabled());
     else if (strcmp(act, "churn_toggle")  == 0) coexist_request_preset((uint8_t)(
-                                                    sim_settings_get_paused() ? SIM_PRESET_AUTO : SIM_PRESET_PAUSE));
-    else if (strcmp(act, "clear_threats") == 0) coexist_request_preset(CONFIG_CLEAR_THREATS);
+                                                    sim_settings_get_paused() ? SIM_PRESET_AUTO : SIM_PRESET_PAUSE), 0);
+    else if (strcmp(act, "clear_threats") == 0) coexist_request_preset(CONFIG_CLEAR_THREATS, 0);
     else if (strcmp(act, "done")          == 0) s_window_done = true;
     else if (strcmp(act, "reboot")        == 0) { httpd_resp_sendstr(r, "{\"ok\":1}"); esp_restart(); }
     else return httpd_resp_send_404(r);            // unknown action: say so, don't silently succeed

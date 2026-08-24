@@ -285,7 +285,13 @@ static void handle_frame(const uint8_t *data, int len, const uint8_t src[6])
         for (int i = 0; i < 4; i++) nonce12[RADAR_SALT_LEN + i] = (uint8_t)(ctr >> (24 - 8 * i));
         config_cmd_t cmd;
         if (config_wire_open_signed(pl, plen, nonce12, SIMULACRA_CTRL_PK, &cmd) != 0) return;  // bad sig
-        if (cmd.version != CONFIG_WIRE_VER) return;
+        if (cmd.version != CONFIG_WIRE_VER) {
+            // Loud, not silent: a mismatch means a mixed-firmware fleet, and the preset ordinals
+            // shifted in v2 -- applying it anyway would run the WRONG preset under a valid signature.
+            ESP_LOGW(ETAG, "config: wire v%u rejected (need v%u) -- reflash the whole fleet",
+                     (unsigned)cmd.version, (unsigned)CONFIG_WIRE_VER);
+            return;
+        }
         // Signature verified FIRST, then the reboot-proof monotonic gate: the signature covers
         // salt||counter, i.e. exactly the material a replayer resends, so it proves authorship but
         // never freshness. Advancing the floor only on signed frames stops an unsigned flood from
@@ -303,9 +309,10 @@ static void handle_frame(const uint8_t *data, int len, const uint8_t src[6])
         }
         // Queued, not applied: presets resize the BLE population and clear_threats memsets the
         // detector table, and coexist_task is the single writer of both.
-        coexist_request_preset(cmd.preset_id);
-        ESP_LOGW(ETAG, "config: queued %s",
-                 cmd.preset_id == CONFIG_CLEAR_THREATS ? "CLEAR THREATS" : "preset");
+        coexist_request_preset(cmd.preset_id, cmd.cap);
+        ESP_LOGW(ETAG, "config: queued %s (cap %u)",
+                 cmd.preset_id == CONFIG_CLEAR_THREATS ? "CLEAR THREATS" : "preset",
+                 (unsigned)cmd.cap);
         return;
     }
 #endif

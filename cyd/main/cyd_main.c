@@ -553,19 +553,41 @@ static void send_request(void){
         for (int i=0;i<4;i++) esp_now_send(BCAST,frame,flen);
 }
 #ifdef SIMULACRA_CONFIG_CTRL
+// Operator-set AUTO cap as a FLEET TOTAL (0 = uncapped). Decoys are additive and know nothing
+// about fleet size, so the Vigil divides by its own roster before transmitting a per-board value.
+static uint16_t s_cap_total = 0;
+
+// Live nodes on the roster. The cap is a fleet total the operator set; dividing by the number of
+// boards actually reporting is what turns it into each board's share.
+static int fleet_alive_count(uint32_t now_ms)
+{
+    int n = 0;
+    for (int i = 0; i < fleet_status_count(&s_fleet); i++) {
+        uint8_t nid; const radar_wire_status_t *nst; bool nal;
+        if (fleet_status_at(&s_fleet, i, &nid, &nst, &nal, now_ms) && nal) n++;
+    }
+    return n < 1 ? 1 : n;                       // never divide by zero; a lone Vigil assumes 1
+}
+
 static void send_config(uint8_t preset)
 {
     uint64_t ctr; if (!next_ctr(&ctr)) return;
     uint8_t nonce12[12]; memcpy(nonce12, s_salt, RADAR_SALT_LEN);   // salt(8) || counter(4 BE)
     for (int i = 0; i < 4; i++) nonce12[RADAR_SALT_LEN+i] = (uint8_t)(ctr >> (24 - 8*i));
-    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = preset };
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    int nodes = fleet_alive_count(now);
+    int per_node = s_cap_total ? (s_cap_total + nodes / 2) / nodes : 0;   // round to nearest
+    if (per_node > 255) per_node = 255;
+    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = preset,
+                         .cap = (uint8_t)per_node };
     uint8_t pl[CONFIG_WIRE_PAYLOAD_LEN];
     if (config_wire_pack_signed(pl, sizeof pl, &cmd, nonce12, SIMULACRA_CTRL_SK) < 0) return;
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
     if (radar_wire_seal(frame, &flen, RADAR_TYPE_CONFIG, pl, sizeof pl,
                         tx_key(), s_salt, ctr) == 0)
         for (int i = 0; i < 4; i++) esp_now_send(BCAST, frame, flen);
-    ESP_LOGW(TAG, "sent CONFIG preset %u", (unsigned)preset);
+    ESP_LOGW(TAG, "sent CONFIG preset %u (cap %u total / %d nodes = %d each)",
+             (unsigned)preset, (unsigned)s_cap_total, nodes, per_node);
 }
 #endif
 
@@ -1000,6 +1022,15 @@ void app_main(void)
                         send_config(ui.sel_preset);
                         radar_ctrl_mark_sent(&ui, now);
                     }
+                } else if (ty >= 40 && ty <= 200 && tx >= 80 && tx <= 160) {
+                    // Centre band: step the AUTO cap (a FLEET TOTAL). Cycles rather than using
+                    // +/- zones so it needs no new geometry. 0 = uncapped. Takes effect on the
+                    // next SEND, like the preset selection beside it.
+                    s_clear_arm_ms = 0; s_turbo_arm_ms = 0;
+                    static const uint16_t CAP_STEPS[] = { 0, 32, 64, 96, 128 };
+                    size_t n = sizeof CAP_STEPS / sizeof CAP_STEPS[0], i = 0;
+                    while (i < n && CAP_STEPS[i] != s_cap_total) i++;
+                    s_cap_total = CAP_STEPS[(i + 1) % n];
                 } else if (tx < 80) {                    // left zone: prev == cycle-around
                     s_clear_arm_ms = 0; s_turbo_arm_ms = 0;
                     for (int i = 0; i < RADAR_CTRL_PRESET_COUNT - 1; i++) radar_ctrl_select_next(&ui);

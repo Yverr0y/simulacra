@@ -89,23 +89,30 @@ static struct { uint32_t hash; int8_t last_rssi; uint32_t last_ms; bool used; }
 
 uint16_t coexist_current_epoch(void) { return s_epoch; }
 
-// Control-command inbox (see coexist.h). 0x100 = empty; the payload is a uint8 preset id, so the
-// sentinel sits outside the byte range and a single int carries both state and value.
+// Control-command inbox (see coexist.h). 0x100 = empty; preset id sits in bits 0-7 and the AUTO cap
+// in bits 16-23, so bit 8 is never set by a packed request and the sentinel stays unambiguous.
+// Both values ride ONE volatile int deliberately: a foreign task writes it and coexist_task reads
+// it, so packing keeps preset and cap from being torn apart across the two.
 #define COEX_NO_REQ 0x100
 static volatile int s_preset_req = COEX_NO_REQ;
 
-void coexist_request_preset(uint8_t preset_id) { s_preset_req = (int)preset_id; }
+void coexist_request_preset(uint8_t preset_id, uint8_t cap)
+{
+    s_preset_req = (int)preset_id | ((int)cap << 16);
+}
 
 static void coexist_drain_requests(void)
 {
     int req = s_preset_req;
     if (req == COEX_NO_REQ) return;
     s_preset_req = COEX_NO_REQ;
-    if (req == CONFIG_CLEAR_THREATS) {
+    uint8_t preset = (uint8_t)(req & 0xFF);
+    uint8_t cap    = (uint8_t)((req >> 16) & 0xFF);
+    if (preset == CONFIG_CLEAR_THREATS) {
         detect_clear_threats();
         ESP_LOGW(TAG, "control: threats cleared");
-    } else if (sim_settings_apply_preset((sim_preset_t)req) == 0) {
-        ESP_LOGW(TAG, "control: applied preset %d", req);
+    } else if (sim_settings_apply_preset_capped((sim_preset_t)preset, cap) == 0) {
+        ESP_LOGW(TAG, "control: applied preset %d (cap %u)", preset, (unsigned)cap);
     }
 }
 

@@ -45,7 +45,10 @@ uint16_t coexist_current_epoch(void);
 // tasks -- the ESP-NOW responder and the config-AP HTTP handler -- must go through here rather
 // than calling sim_settings_apply_preset/detect_clear_threats directly. Last request wins:
 // commands are absolute, so a newer one supersedes an undrained older one.
-void coexist_request_preset(uint8_t preset_id);
+//
+// `cap` is the AUTO upper bound for this board (0 = uncapped). MANUAL presets ignore it -- they
+// name their own level -- as does the CONFIG_CLEAR_THREATS sentinel.
+void coexist_request_preset(uint8_t preset_id, uint8_t cap);
 
 // TURBO override: force both radios to their hardware ceiling and switch to fast churn intervals,
 // bypassing the fleet-share floor/ceiling and room-density population-match entirely. Releases any

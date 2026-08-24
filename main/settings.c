@@ -124,10 +124,17 @@ void sim_settings_set(const sim_settings_t *s)
     sim_settings_apply(&c); settings_save();
 }
 
-int sim_settings_apply_preset(sim_preset_t p)
+int sim_settings_apply_preset(sim_preset_t p) { return sim_settings_apply_preset_capped(p, 0); }
+
+int sim_settings_apply_preset_capped(sim_preset_t p, uint8_t cap)
 {
     sim_settings_t s;
     if (sim_settings_resolve(p, sim_settings_floor(), sim_settings_ceiling(), &s) != 0) return -1;
+    // The cap bounds AUTO only: a MANUAL level is the operator naming a number directly, so a
+    // second number competing with it would just be ambiguous. Stored regardless so the re-profile
+    // sees it the moment AUTO is selected again.
+    s.auto_cap = cap;
+    if (s.auto_scale && cap && s.active_target > cap) s.active_target = cap;
     sim_settings_apply(&s); settings_save();
     return 0;
 }

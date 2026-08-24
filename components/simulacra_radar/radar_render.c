@@ -181,9 +181,10 @@ static void draw_library(radar_gfx_t *g, const radar_lib_info_t *lib){
 // and by CTRL_LABELS' array position, same as every other preset here.
 #define CTRL_TURBO_PRESET 5
 static const char *CTRL_LABELS[RADAR_CTRL_PRESET_COUNT] =
-    { "PAUSE", "STEALTH", "NORMAL", "DENSE", "MAX", "TURBO" };
+    { "PAUSE", "AUTO", "LOW", "MED", "HIGH", "TURBO" };
 static const char *PRESET_DESC[RADAR_CTRL_PRESET_COUNT] =
-    { "freeze on-air", "min crowd", "balanced", "big crowd", "max crowd", "flood the zone" };
+    { "freeze on-air", "match the room", "quarter crowd", "half crowd", "full crowd",
+      "flood the zone" };
 static const char *ctrl_preset_name(uint8_t p){
     if (p < RADAR_CTRL_PRESET_COUNT)      return CTRL_LABELS[p];
     if (p == RADAR_CTRL_PRESET_COUNT)     return "CUSTOM";
