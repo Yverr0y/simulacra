@@ -180,7 +180,14 @@ sim_preset_t sim_settings_match_preset(const sim_settings_t *cur, uint8_t floor,
         // AUTO board, making the console report a paused fleet that is actually churning.
         if (r.auto_scale != cur->auto_scale) continue;
         if (r.paused != cur->paused) continue;
-        if (cur->auto_scale) return p;
+        if (cur->auto_scale) {
+            // ONLY active_target is exempt in AUTO. accel is a plain settings value, not something
+            // the room drives, so a hand-set churn rate still has to report CUSTOM -- returning the
+            // preset here would have the console claim AUTO while the engine ran a rate no preset
+            // resolves to. Caught by the on-target self-test, not by any host test.
+            if (r.accel != cur->accel) continue;
+            return p;
+        }
         if (r.active_target == cur->active_target && r.accel == cur->accel)
             return p;
     }

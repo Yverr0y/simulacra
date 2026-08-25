@@ -344,28 +344,54 @@ static void espnow_drain_rx(void)
     }
 }
 
-// Broadcast our current active synthetic MACs so fleet-mates can self-exclude us from their
-// model / learn / detect. AES-GCM authenticated (only fleet PSK holders can read/emit it).
-static void broadcast_fleet_macs(void)
+// One sealed FLEET_MACS frame. Split out so the broadcast can chunk (see below).
+static void fleet_macs_send_chunk(const uint8_t (*macs)[6], size_t n)
 {
-    uint8_t macs[FLEET_BCAST_MACS_MAX][6]; size_t n = 0;
-    for (size_t s = 0; s < churn_active_count() && n < FLEET_BCAST_MACS_MAX; s++) {
-        const identity_t *id = churn_active_at(s);
-        if (id) memcpy(macs[n++], id->addr, 6);
-    }
-    for (int i = 0; i < probe_agents_count() && n < FLEET_BCAST_MACS_MAX; i++) {
-        const probe_agent_t *a = probe_agents_at(i);
-        if (a) memcpy(macs[n++], a->mac, 6);        // Wi-Fi probe MACs -> peers exclude them from density
-    }
     if (n == 0) return;
     const uint8_t *k = fleet_key_get(); if (!k) return;
     uint8_t pl[RADAR_FRAME_MAX]; size_t plen = fleet_macs_pack(pl, sizeof pl, macs, n);
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
     if (radar_wire_seal(frame, &flen, RADAR_TYPE_FLEET_MACS, pl, plen,
-                        k, s_salt, ++s_counter) == 0) {
+                        k, s_salt, ++s_counter) == 0)
         esp_now_send(BCAST, frame, flen);
-        ESP_LOGW(ETAG, "fleet: broadcast %u macs", (unsigned)n);
+}
+
+// Broadcast our current active synthetic MACs so fleet-mates can self-exclude us from their
+// model / learn / detect. AES-GCM authenticated (only fleet PSK holders can read/emit it).
+//
+// CHUNKED, because one frame cannot carry a full board's identities. FLEET_BCAST_MACS_MAX (32) is
+// a hard consequence of the 250-byte ESP-NOW frame, not a tunable. Since boards became additive
+// (2026-08-24) a single decoy runs up to BLE_DEVICES_MAX + PROBE_AGENTS_MAX = 48 identities, so the
+// old single-frame version silently TRUNCATED at 32 and never advertised the rest. Worse, BLE was
+// packed first, so a full BLE crowd consumed all 32 slots and ZERO probe MACs were ever broadcast --
+// the Wi-Fi density estimate had no fleet exclusion at all.
+//
+// The cost of truncation is a positive feedback loop: an unadvertised fleetmate MAC is counted as a
+// real ambient device -> pop_ewma inflates -> AUTO grows the crowd -> more unadvertised MACs. On the
+// bench this saturated every board at its ceiling within an hour, and because rf_model persists to
+// NVS the inflated estimate survived reboots.
+//
+// No wire-format change is needed. Exclusion is additive with a TTL (fleet_note_peer_macs is
+// refresh-or-insert), so each chunk is independently useful and the receiver needs no reassembly --
+// unlike the sig-sync path, which must have every chunk before it can adopt. A dropped chunk simply
+// costs those MACs until the next broadcast, well inside FLEET_MAC_TTL_MS.
+static void broadcast_fleet_macs(void)
+{
+    uint8_t macs[FLEET_BCAST_MACS_MAX][6]; size_t n = 0, sent = 0;
+    for (size_t s = 0; s < churn_active_count(); s++) {
+        const identity_t *id = churn_active_at(s);
+        if (!id) continue;
+        memcpy(macs[n++], id->addr, 6);
+        if (n == FLEET_BCAST_MACS_MAX) { fleet_macs_send_chunk(macs, n); sent += n; n = 0; }
     }
+    for (int i = 0; i < probe_agents_count(); i++) {
+        const probe_agent_t *a = probe_agents_at(i);
+        if (!a) continue;
+        memcpy(macs[n++], a->mac, 6);       // Wi-Fi probe MACs -> peers exclude them from density
+        if (n == FLEET_BCAST_MACS_MAX) { fleet_macs_send_chunk(macs, n); sent += n; n = 0; }
+    }
+    fleet_macs_send_chunk(macs, n); sent += n;      // trailing partial chunk
+    if (sent) ESP_LOGW(ETAG, "fleet: broadcast %u macs", (unsigned)sent);
 }
 
 static void respond_once(void)
