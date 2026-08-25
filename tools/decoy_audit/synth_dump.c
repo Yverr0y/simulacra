@@ -13,6 +13,7 @@
 #include "uniq_id.h"
 #include "phantom.h"
 #include "probe_agents.h"
+#include "radar_pad.h"
 
 static const char *atype_of(const uint8_t addr[6]) {
     switch (addr[5] >> 6) { case 3: return "static"; case 1: return "rpa";
@@ -251,6 +252,11 @@ int main(int argc, char **argv) {
         uint8_t a[6];
         make_random_addr(a, 0xc0);
         printf("%d\n", uniq_try(a) ? 1 : 0);   // 0 = routed (recorded), 1 = not routed
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--padbucket") == 0) {
+        size_t n = argc > 2 ? (size_t)strtoul(argv[2], 0, 10) : 0;
+        printf("%u\n", (unsigned)radar_pad_plaintext_len(n));
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--acttarget") == 0) {
