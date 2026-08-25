@@ -19,6 +19,7 @@ static const char *TAG = "esniff";
 //   [39..]   ESP-NOW body == our radar_wire frame ([nonce(12)][ct][tag(16)] since wire v4)
 #define ENOW_HDR 39
 #define SRC_OFF  10
+#define WIFI_FCS_LEN 4          // rx_ctrl.sig_len includes the hardware FCS; strip it
 
 static volatile uint32_t s_req, s_status, s_status_laa, s_status_factory;
 static volatile uint32_t s_last_status_ms;
@@ -34,7 +35,13 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     if (f[24] != 0x7F || f[25] != 0x18 || f[26] != 0xFE || f[27] != 0x34)  // Espressif vendor
         return;
     const uint8_t *ef = f + ENOW_HDR;                                      // our radar_wire frame
-    size_t eflen = (size_t)(len - ENOW_HDR);
+    // rx_ctrl.sig_len INCLUDES the 4-byte hardware FCS. v3 matched a leading magic byte and never
+    // cared, but v4 derives the ciphertext length from the frame length -- leaving the FCS on
+    // shifts the tag offset by 4 and authentication fails on every single frame. Caught only
+    // because the keyed control run also read zero; the unkeyed run alone would have looked like
+    // a pass.
+    if (len < ENOW_HDR + WIFI_FCS_LEN) return;
+    size_t eflen = (size_t)(len - ENOW_HDR - WIFI_FCS_LEN);
 
     // Wire v4 removed the plaintext magic and type byte, so there is nothing to match on and the
     // only way to identify a frame as ours is to AUTHENTICATE it. That is precisely the property
@@ -44,6 +51,12 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     if (radar_wire_open(ef, eflen, SIMULACRA_ESPNOW_KEY,
                         &wtype, pl, sizeof pl, &plen, salt, &ctr) != 0)
         return;                                                            // not our link
+    // ACCEPTANCE TEST (2026-08-25, passed): swapping SIMULACRA_ESPNOW_KEY above for a wrong key
+    // makes this board see ZERO frames, while the keyed build sees REQ/STAT normally under the
+    // same conditions. That difference IS wire v4's purpose. Do NOT gate that swap behind a new
+    // -D flag: main/CMakeLists.txt forwards only an allowlist of flag names to the compiler, so an
+    // unlisted -D silently does nothing and the build quietly keeps the real key -- which looked
+    // exactly like a passing test until the keyed control run contradicted it.
 
     const uint8_t *sa = f + SRC_OFF;
     bool laa = (sa[0] & 0x02) != 0;                                        // locally-administered bit
