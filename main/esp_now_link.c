@@ -48,6 +48,7 @@ void espnow_status_from_webui(radar_wire_status_t *out, const webui_status_t *in
 #include "sig_wire.h"
 #include "sig_store.h"
 #include "fleet.h"
+#include "ble_devices.h"   // ble_device_next_addr(): pre-drawn rotation targets for the broadcast
 #include "radar_retx.h"
 #include "config_wire.h"
 #include "detect.h"
@@ -389,6 +390,18 @@ static void broadcast_fleet_macs(void)
         const identity_t *id = churn_active_at(s);
         if (!id) continue;
         memcpy(macs[n++], id->addr, 6);
+        if (n == FLEET_BCAST_MACS_MAX) { fleet_macs_send_chunk(macs, n); sent += n; n = 0; }
+    }
+    // Also advertise each device's PRE-DRAWN NEXT address, so peers hold it before it goes on air.
+    // Without this a freshly-rotated fleetmate address is unexcluded for up to one broadcast
+    // interval, and in that window peers both count it as a real ambient device (driving the
+    // population feedback measured on 2026-08-25) and match it against the tracker signature DB
+    // (a `tile`-template decoy is a guaranteed Tile hit). Costs at most one extra address per
+    // rotating device and is only affordable because this broadcast chunks.
+    for (int i = 0; i < ble_devices_count(); i++) {
+        const uint8_t *na = ble_device_next_addr(i);
+        if (!na) continue;                      // static devices never rotate
+        memcpy(macs[n++], na, 6);
         if (n == FLEET_BCAST_MACS_MAX) { fleet_macs_send_chunk(macs, n); sent += n; n = 0; }
     }
     for (int i = 0; i < probe_agents_count(); i++) {

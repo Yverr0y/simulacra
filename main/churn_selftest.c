@@ -679,6 +679,48 @@ static void test_observe_dedup(void)
     ST_CHECK(h1 != h2, "salt makes the dedup hash non-stable across boots");
 }
 
+// A rotating device must rotate INTO its pre-drawn next_addr, and that address must be visible to
+// the broadcast BEFORE the rotation happens. Without this, a freshly-rotated fleetmate address is
+// unexcluded for up to one broadcast interval, and peers in that window both count it as a real
+// ambient device (the 2026-08-25 population feedback) and match it against the tracker signature DB
+// (a `tile`-template decoy is a guaranteed confidence-75 Tile hit against its own fleet).
+static void test_ble_next_addr_prebroadcast(void)
+{
+    roster_init();
+    ble_devices_init(CHURN_ST_N, 0);
+
+    // Find a non-static device whose rotation deadline falls BEFORE its death, so the address
+    // change we observe is a rotation and not a rebirth. Both change addr; only rebirth resets
+    // born_ms, which is the discriminator used below.
+    int checked = 0;
+    for (int slot = 0; slot < ble_devices_count() && checked < 3; slot++) {
+        const ble_device_t *cur = ble_devices_at(slot);
+        if (!cur || !cur->alive || cur->atype == BLE_ATYPE_STATIC) continue;
+        if (cur->next_rotate_ms >= cur->born_ms + cur->life_ms) continue;   // dies before rotating
+
+        const uint8_t *na = ble_device_next_addr(slot);
+        if (!na) continue;
+        uint8_t pre[6];  memcpy(pre,  na, 6);
+        uint8_t live[6]; memcpy(live, cur->id.addr, 6);
+        uint32_t born = cur->born_ms, deadline = cur->next_rotate_ms;
+        ST_CHECK(memcmp(pre, live, 6) != 0, "pre-drawn next_addr differs from the live address");
+
+        ble_devices_tick(deadline + 1);           // one tick, straight past the rotation deadline
+
+        const ble_device_t *aft = ble_devices_at(slot);
+        if (aft && aft->born_ms == born && memcmp(aft->id.addr, live, 6) != 0) {   // rotated
+            ST_CHECK(memcmp(aft->id.addr, pre, 6) == 0,
+                     "rotated INTO the pre-drawn address peers were already told about");
+            const uint8_t *na2 = ble_device_next_addr(slot);
+            ST_CHECK(na2 && memcmp(na2, pre, 6) != 0,
+                     "a fresh next_addr is drawn immediately after rotating");
+            checked++;
+        }
+        ble_devices_init(CHURN_ST_N, 0);          // fresh population for the next slot examined
+    }
+    ST_CHECK(checked > 0, "at least one rotation was observed (test premise)");
+}
+
 static void test_rf_model_nvs(void)
 {
     rf_model_t m; rf_model_reset(&m);
@@ -1909,6 +1951,7 @@ int churn_selftest_run(void)
     test_roster_payloads();
     test_rf_model();
     test_observe_dedup();
+    test_ble_next_addr_prebroadcast();
     test_rf_model_nvs();
     test_vendor_mfg_builder();
     test_generate();

@@ -24,15 +24,20 @@ class FleetMacCapacity(unittest.TestCase):
     """
 
     def test_table_holds_a_multi_board_fleet(self):
-        per_board = define("ble_devices.h", "BLE_DEVICES_MAX") + \
-                    define("probe_agents.h", "PROBE_AGENTS_MAX")
+        ble = define("ble_devices.h", "BLE_DEVICES_MAX")
+        # Each rotating BLE device advertises TWO addresses: the live one and its pre-drawn
+        # next_addr, so peers hold the rotation target before it goes on air (2026-08-25 - closes
+        # the window in which a rotated fleetmate is both counted as ambient AND matched as a
+        # tracker). Worst case every device is non-static, hence 2x.
+        per_board = 2 * ble + define("probe_agents.h", "PROBE_AGENTS_MAX")
         cap = define("fleet.h", "FLEET_MAC_CAP")
         # At least 3 peers' worth: the in-hand fleet is 3 decoys + a Vigil, so any decoy hears 2
         # peers today, and headroom matters because rotation churns the live set.
         self.assertGreaterEqual(
             cap, 3 * per_board,
-            f"FLEET_MAC_CAP ({cap}) cannot hold 3 peers x {per_board} identities. Unexcluded "
-            f"fleetmate MACs are counted as real ambient devices and inflate the AUTO crowd.")
+            f"FLEET_MAC_CAP ({cap}) cannot hold 3 peers x {per_board} identities "
+            f"({ble} live + {ble} pre-drawn + probe agents). Unexcluded fleetmate MACs are counted "
+            f"as real ambient devices AND matched against the tracker signature DB.")
 
     def test_broadcast_chunk_fits_an_espnow_frame(self):
         # [uint8 count][count*6] plus the 32-byte seal overhead must stay inside 250.

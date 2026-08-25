@@ -20,10 +20,29 @@ typedef struct {
     uint32_t    born_ms;        // set at spawn; == now on a fresh birth/rebirth
     uint32_t    life_ms;        // bounded lifetime; on expiry the device dies and is reborn fresh
     uint32_t    next_rotate_ms; // next address rotation (ignored for STATIC)
+    // The address this device will rotate TO, drawn in advance so fleetmates can be told about it
+    // BEFORE it appears on air. Unused for STATIC (never rotates).
+    //
+    // Exclusion is by MAC and only covers addresses already broadcast, so a freshly-rotated
+    // fleetmate address used to be invisible to peers for up to one broadcast interval (20-30 s).
+    // The 2026-08-25 capture showed that window causes two separate failures at once:
+    //   1. peers count the unknown address as a REAL ambient device -> population feedback
+    //      (fleet-wide 32 -> 65 -> 33 -> 42 over an hour, ambient provably flat throughout)
+    //   2. peers MATCH it against the tracker signature DB -> a `tile`-template decoy is a
+    //      guaranteed confidence-75 Tile hit (templates.c writes sd[0..1]={0xED,0xFE}; sig_seed.c
+    //      matches pattern={0xED,0xFE} at pat_off=0), so the fleet populates its own threat display
+    //      in the exact category that display exists to warn about -- and detect_note_known
+    //      persists it to NVS, so the false hits outlive reboots.
+    // Broadcasting next_addr alongside the current one closes that window to zero.
+    uint8_t     next_addr[6];
     bool        alive;
     int8_t   persona_idx;       // >=0: bound to phantom[persona_idx]; -1: unbound BLE-only crowd
     uint32_t persona_gen;       // last phantom generation this bound member synced to
 } ble_device_t;
+
+// The address this device will rotate to next, or NULL for a STATIC device (which never rotates).
+// Broadcast alongside the live address so peers can exclude it before it is used.
+const uint8_t *ble_device_next_addr(int slot);
 
 // Spawn `n` persistent devices (clamped to BLE_DEVICES_MAX). Behaviour is drawn from the
 // roster library, so roster_init() MUST have been called first.

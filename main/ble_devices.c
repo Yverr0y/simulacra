@@ -2,6 +2,7 @@
 #include "roster.h"
 #include "templates.h"
 #include "esp_random.h"
+#include <string.h>       // memcpy/memset for the pre-drawn next_addr
 
 // Role split (user-chosen): ~70% transient / ~30% resident.
 #define ROLE_RESIDENT_PCT   30
@@ -133,6 +134,10 @@ static void dev_spawn(ble_device_t *d, uint32_t now_ms)
     d->alive = true;
     // Independent rotation phase: first rotation is a full jittered interval out from birth.
     d->next_rotate_ms = (d->atype == BLE_ATYPE_STATIC) ? 0 : now_ms + rotate_base(d->atype);
+    // Pre-draw the address this device will rotate TO, so fleetmates can be told about it before
+    // it appears on air (see next_addr in ble_devices.h). STATIC never rotates, so it has none.
+    if (d->atype != BLE_ATYPE_STATIC) make_random_addr(d->next_addr, top2_for(d->atype));
+    else                              memset(d->next_addr, 0, 6);
     d->persona_idx = -1;        // unbound by default; phantom_sync_ble claims bound slots
     d->persona_gen = 0;
 }
@@ -146,6 +151,14 @@ void ble_devices_init(int n, uint32_t now_ms)
 }
 
 int ble_devices_count(void) { return s_n; }
+
+const uint8_t *ble_device_next_addr(int slot)
+{
+    if (slot < 0 || slot >= s_n) return NULL;
+    const ble_device_t *d = &s_dev[slot];
+    if (!d->alive || d->atype == BLE_ATYPE_STATIC) return NULL;   // static never rotates
+    return d->next_addr;
+}
 
 // Live resize. Growing spawns fresh devices into the new slots (they are born now, so they join
 // the crowd on the normal arrival path rather than all appearing pre-aged); shrinking simply stops
@@ -238,7 +251,11 @@ void ble_devices_tick(uint32_t now_ms)
         if (!d->alive) continue;
         if (d->atype == BLE_ATYPE_STATIC) continue;        // static never rotates (bound are always RPA)
         if ((int32_t)(now_ms - d->next_rotate_ms) >= 0) {
-            make_random_addr(d->id.addr, top2_for(d->atype));   // fresh unique addr; binding untouched
+            // Rotate INTO the pre-drawn address rather than minting one here: peers have already
+            // been told about it, so it is excluded from their model and their tracker matcher the
+            // instant it goes on air. Then draw the next one for the same reason. Binding untouched.
+            memcpy(d->id.addr, d->next_addr, 6);
+            make_random_addr(d->next_addr, top2_for(d->atype));
             d->next_rotate_ms = now_ms + (d->persona_idx >= 0 ? persona_rpa_rotate_base()
                                                               : rotate_base(d->atype));
         }
