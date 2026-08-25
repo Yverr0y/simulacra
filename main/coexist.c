@@ -367,7 +367,6 @@ static void coexist_task(void *arg)
     const coexist_persona_t *p = coexist_persona();
     uint32_t now0 = (uint32_t)(esp_timer_get_time() / 1000);
     uint32_t last_wifi = now0, last_repro = now0;      // don't fire at the instant of boot
-    uint32_t hop24 = 0;
     for (;;) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         // The census-change resize hook that lived here is gone: population no longer depends on
@@ -396,6 +395,17 @@ static void coexist_task(void *arg)
         }
         coexist_detect_led_tick(now);
         coexist_due_t d = coexist_due(p, now, &last_wifi, &last_repro);
+        // Break the metronome. coexist_due fires on an EXACT fixed period, so probe bursts appeared
+        // every 2.000 s on Ward / 7.000 s on Shade -- and the interval itself identifies the board
+        // model. Per-agent probe timing is already jittered (that was the whole point of the agent
+        // model), but the burst cadence carrying them was not, so a listener watching only WHEN
+        // clusters occur saw a clean periodic signal regardless.
+        //
+        // Nudge the just-stamped baseline FORWARD by a random fraction of the period, making the
+        // next interval period..1.5*period. One-sided on purpose: last_* are unsigned ms timestamps
+        // and moving them backwards risks an underflow that would fire every tick.
+        if (d.fire_wifi)      last_wifi  += esp_random() % (p->wifi_period_ms / 2 + 1);
+        if (d.fire_reprofile) last_repro += esp_random() % (p->reprofile_period_ms / 8 + 1);
         // s_wifi_allowed as well as s_wifi_ok: the setter's false path used to write a flag the
         // tick never read, so coexist_set_wifi_enabled(false) after start silently kept injecting.
         //
@@ -431,8 +441,27 @@ static void coexist_task(void *arg)
                                                   // holds ONE Wi-Fi MAC for its whole life while its
                                                   // BLE RPA rotates - the mismatch is the tell.
                                                   // probe_agents_lifecycle is standalone-only.
-            if (n24) probe_inject_burst(ch24[hop24++ % n24]);        // 2.4 GHz (coex-arbitrated)
-            if (p->use_5g && (++s_wifi_ctr % COEX_5G_EVERY == 0)) coexist_5g_excursion();
+            if (n24) {
+                // Shuffled sweep, not a fixed 1->6->11->1 cycle. Every channel is still visited
+                // once per pass (a real scanner covers the band), but the ORDER is re-randomized
+                // each pass, so the joint (period, channel) pattern stops being predictable.
+                static uint8_t order[16]; static uint8_t ord_n, ord_i;
+                if (ord_n != n24 || ord_i >= ord_n) {           // (re)build a permutation
+                    ord_n = (uint8_t)(n24 > sizeof order ? sizeof order : n24);
+                    for (uint8_t k = 0; k < ord_n; k++) order[k] = k;
+                    for (uint8_t k = ord_n; k > 1; k--) {       // Fisher-Yates
+                        uint8_t j = (uint8_t)(esp_random() % k);
+                        uint8_t t = order[k-1]; order[k-1] = order[j]; order[j] = t;
+                    }
+                    ord_i = 0;
+                }
+                probe_inject_burst(ch24[order[ord_i++]]);       // 2.4 GHz (coex-arbitrated)
+            }
+            // Jittered 5 GHz excursion: a fixed every-Nth-burst cadence is itself a pattern.
+            if (p->use_5g && (++s_wifi_ctr % COEX_5G_EVERY == 0)) {
+                coexist_5g_excursion();
+                s_wifi_ctr += esp_random() % COEX_5G_EVERY;     // shift the next excursion's phase
+            }
         }
         if (!s_wifi_ok || !s_wifi_allowed) {
             // No Wi-Fi means no probe requests. A persona is a phone presenting on both radios, so

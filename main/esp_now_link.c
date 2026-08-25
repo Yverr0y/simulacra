@@ -432,7 +432,13 @@ static void offer_library(void)
 static void espnow_task(void *arg)
 {
     (void)arg;
+    // Jittered periods, re-drawn on every fire. Fixed 25 s / 30 s timers made this node's ESP-NOW
+    // housekeeping a metronome: a listener who cannot read a single sealed byte could still lock
+    // onto the cadence and count the fleet. FLEET_MACS must stay well inside FLEET_MAC_TTL_MS
+    // (90 s) so peers never expire a live MAC -- 20-30 s keeps at least 3 attempts of margin.
     uint32_t last_offer = 0, last_fleet = 0;
+    uint32_t offer_period = 25000 + esp_random() % 10001;   // 25-35 s
+    uint32_t fleet_period = 20000 + esp_random() % 10001;   // 20-30 s (TTL 90 s -> >=3x margin)
     for (;;) {
         if (!fleet_key_have()) {         // seek-enrollment: can't seal; wait for a signed OFFER
             espnow_drain_rx();           // MUST still drain: the OFFER that keys us arrives here
@@ -443,8 +449,14 @@ static void espnow_task(void *arg)
         espnow_drain_rx();               // all frame processing happens here, off the driver task
         if (s_answer) { s_answer = false; respond_once(); }
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-        if (now - last_offer > 30000) { last_offer = now; offer_library(); }   // every 30 s
-        if (now - last_fleet > 25000) { last_fleet = now; broadcast_fleet_macs(); }   // every 25 s
+        if (now - last_offer > offer_period) {
+            last_offer = now; offer_period = 25000 + esp_random() % 10001;
+            offer_library();
+        }
+        if (now - last_fleet > fleet_period) {
+            last_fleet = now; fleet_period = 20000 + esp_random() % 10001;
+            broadcast_fleet_macs();
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

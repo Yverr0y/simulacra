@@ -776,6 +776,14 @@ static void net_init(void){
     esp_netif_init(); esp_event_loop_create_default();
     wifi_init_config_t c=WIFI_INIT_CONFIG_DEFAULT(); esp_wifi_init(&c);
     esp_wifi_set_storage(WIFI_STORAGE_RAM); esp_wifi_set_mode(WIFI_MODE_STA); esp_wifi_start();
+    // Randomize the STA source MAC (locally-administered), exactly as the decoys do in
+    // esp_now_link.c. The factory MAC carries a registered Espressif OUI, so every control frame
+    // this node broadcast was stamped with the chip vendor -- a direct hardware identifier on air,
+    // and the Vigil is the one node that transmits on a fixed ~1 Hz cadence. espnow_sniff.c flags
+    // this as [FACTORY!] vs [LAA] if it ever regresses.
+    uint8_t mac[6]; esp_wifi_get_mac(WIFI_IF_STA, mac);
+    esp_fill_random(mac, 6); mac[0] = (mac[0] & 0xFE) | 0x02;      // LAA, unicast
+    esp_wifi_set_mac(WIFI_IF_STA, mac);                            // best-effort; ignore rc
     esp_wifi_set_channel(ESPNOW_CH, WIFI_SECOND_CHAN_NONE);
     esp_now_init();
     esp_now_peer_info_t p={0}; memcpy(p.peer_addr,BCAST,6); p.channel=ESPNOW_CH; p.ifidx=WIFI_IF_STA;
@@ -929,6 +937,7 @@ void app_main(void)
     bool espnow_suspended = false;                             // true while in modal exposure mode
     radar_view_t prev_view = RADAR_VIEW_HOME;                  // for exposure enter/exit transitions
     static uint16_t band[LCD_W*40]; uint16_t sweep=0; uint32_t last_req=0;
+    uint32_t req_period = 1000 + (esp_random() % 601);          // jittered poll period, 1.0-1.6 s
     bool bl_was_on = true;
     ESP_LOGW(TAG, "panel up: live radar loop starting");
     for(;;){
@@ -1094,8 +1103,15 @@ void app_main(void)
             if (s_expo.state == EXPO_BASELINE || s_expo.state == EXPO_WATCH) radar_ui_note_input(&ui, now);
         }
         prev_view = ui.view;
-        // keep asking every ~1s while the screen is awake so data stays fresh (not while sniffing)
-        if (ui.backlight_on && !espnow_suspended && now-last_req > 1000) { send_request(); last_req=now; }
+        // Keep asking while the screen is awake so data stays fresh (not while sniffing). The
+        // period is jittered 1.0-1.6 s rather than a flat 1.000 s: the Vigil is the most regular
+        // emitter in the fleet, and an exact 1 Hz broadcast is a lock-on signal for anyone watching
+        // the channel, even without reading a sealed byte. Freshness is unaffected at this scale --
+        // the stale threshold is 12 s.
+        if (ui.backlight_on && !espnow_suspended && now - last_req > req_period) {
+            send_request(); last_req = now;
+            req_period = 1000 + (esp_random() % 601);
+        }
         drain_rx();   // ALL frame processing, off the Wi-Fi driver task. Must sit OUTSIDE the
                       // provisioning gate: the baked fleet build has no FLEET_PROVISION, and with
                       // the drain compiled out the Vigil receives nothing at all -- every node
