@@ -97,14 +97,23 @@ def parse_adverts(path):
     return out
 
 def build_profile(adverts):
-    at=Counter(a["atype"] for a in adverts)
     # Per-address aggregation. Co-travel correlation tracks entities, not advert volume,
     # so the vendor histogram is DEVICE-weighted: one chatty beacon must not dominate.
     ts=defaultdict(list); dev_co=defaultdict(Counter); dev_ad=defaultdict(Counter)
+    dev_at={}
     for a in adverts:
         ts[a["addr"]].append(a["ts"])
         dev_co[a["addr"]][a["company"]] += 1
         dev_ad[a["addr"]][a["ad_sig"]] += 1
+        dev_at[a["addr"]] = a["atype"]
+    # atype is DEVICE-weighted for the same reason as vendor/ad_sig, and it is the axis where
+    # advert-weighting hurt most: address type is fixed by the address's top two bits, so every
+    # advert from one address carries the same atype and advert-weighting only measures how
+    # chatty that device is. RPA phones advertise far faster than static beacons, so the old
+    # per-advert count read 0.022 static on the 2026-08-25 ambient baseline where the device
+    # mix is 0.250 - an 11x distortion, compared against a decoy side that was always
+    # device-weighted (one synth row = one device). Mixed-basis comparison.
+    at=Counter(dev_at.values())
     # Each device's AD-structure signature = its modal ordered AD-type sequence, device-weighted
     # so one chatty beacon can't dominate the structural histogram.
     ads=Counter()
@@ -132,7 +141,7 @@ def build_profile(adverts):
             if PRESENCE_BINS[_k]<=span<PRESENCE_BINS[_k+1]: pbins[_k]+=1; break
     if not ts:
         sys.stderr.write("capture_profile: no addresses with timestamps; presence_ms_bins all zero\n")
-    n=len(adverts) or 1
+    n=sum(at.values()) or 1                 # devices, not adverts - see the atype note above
     isum=sum(ibins) or 1
     vtot=sum(ven.values()) or 1
     adtot=sum(ads.values()) or 1
