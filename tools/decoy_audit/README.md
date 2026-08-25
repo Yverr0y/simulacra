@@ -285,12 +285,40 @@ The **presence_duration** discriminator scores how long each address stays obser
   per-advert, so exact bytes would measure noise, not structure).
 - **Learned-shape path** - DONE (2026-07-13). See "Learned-shape audit" below.
 - **Presence / lifespan cohort** - DONE (2026-07-13). See "Presence-duration tell" above.
-- **RSSI / TX-power spread** - UNBLOCKED (2026-08-25). Deferred for want of a clean label source, on
-  the mistaken belief that `long.pcap` was real+decoy mixed. Every pre-2026-08 capture (`long`,
-  `newlong`, `errands`) was in fact taken with no decoys running, and 2026-08-25 added a matched
-  pair in one place: `ble_baseline_2026-08-25.pcap` (fleet OFF) and `ble_fleet_2026-08-25.pcap`
-  (fleet ON). Differencing that pair labels decoy RSSI directly, so `rssi_physical` need no longer
-  be reported as "modeled" - it can be measured.
+- **RSSI / TX-power spread** - MEASURED (2026-08-25), was deferred. Decoys labelled in
+  `ble_fleet_2026-08-25.pcap` by the four AD signatures absent from ambient (`01,ff`, `01`,
+  `01,09,ff`, `01,03`; label leaks into 0 of 16 baseline devices). Metric is the spread of
+  per-device median RSSI **across** devices - decoys radiate from 3 points while real devices sit at
+  many distances. Within-device stdev is NOT diagnostic from these captures: everything was
+  stationary, so decoy steadiness cannot be told apart from a still room.
+
+  ```
+  ambient  baseline 2026-08-25 (quiet bench)  n= 16   across-dev sd 12.26   median RSSI -68
+  ambient  long.pcap    (busy, 6 h)           n=665   across-dev sd 13.22   median RSSI -71
+  ambient  newlong.pcap (quiet)               n= 40   across-dev sd 14.60   median RSSI -69.5
+  DECOY    fleet 2026-08-25                   n=183   across-dev sd  9.90   median RSSI -58
+  ```
+
+  Ambient spread is a stable 12.3-14.6 across three unrelated clean captures, so the decoys' 9.90 is
+  a **real if modest tell: ratio 0.68-0.81, a band that excludes 1.0.** Decoy identities cluster
+  ~25-30% tighter than a real crowd, and sit ~11 dB louder.
+
+  **The bench flatters this result.** `dither_tx()` (`generate.c`) draws per-identity TX from
+  {-12,-9,-6,-3,0,3}, a 15 dB range worth sd 5.12. Measured decoy spread is 9.90, so about
+  sqrt(9.90^2 - 5.12^2) = 8.5 dB came from the 3 boards' physical separation and multipath - with
+  the sniffer sitting among them. To an adversary at realistic distance those 3 boards collapse
+  toward a single point, that 8.5 dB shrinks, and the dither becomes the only diversity the fleet
+  has: the ratio would fall toward 5.12/13 ~ 0.39. **UNVERIFIED extrapolation - it needs a capture
+  taken at distance, which is also the missing pedestrian capture.**
+
+  Fix direction if confirmed: widen and lower `dither_tx()`. Reaching ambient's ~13 dB from the
+  dither alone needs roughly a 30 dB range (e.g. -27..+3 dBm, within ESP32 capability). That trades
+  decoy audibility for realism - some decoys become faint - which is a design call, not a bug fix.
+
+  (The original deferral is void: it held that the axis needed a decoy-only capture as a clean label
+  source, on the mistaken belief that `long.pcap` was real+decoy mixed. It was not, so the block
+  never existed. `rssi_physical` should stop being reported as "modeled" in `scorecard.py` now that
+  it can be measured.)
 
 ## Privacy
 
