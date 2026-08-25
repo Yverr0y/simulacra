@@ -148,5 +148,29 @@ int rf_model_load_nvs(rf_model_t *m)
     nvs_close(h);
     if (e != ESP_OK || len != sizeof(*m) ||
         m->magic != RF_MODEL_MAGIC || m->version != RF_MODEL_VERSION) return -1;
+
+    // Restore the environment's SHAPE, never its DENSITY.
+    //
+    // The histograms (vendor mix, interval bands, RSSI, PDU types) are slow-moving structural
+    // knowledge worth carrying across a reboot -- they describe what devices around here look
+    // like. pop_ewma and arrival_per_min are neither: they are an instantaneous count of a room
+    // the board may no longer be in, and restoring them is actively harmful twice over.
+    //
+    // 1. CARRIED TO A NEW ROOM. A fleet moved from a busy street to an empty flat boots sized for
+    //    the street, and stays that way until enough sweeps decay the estimate.
+    //
+    // 2. IT LATCHES A MEASURED BUG. The 2026-08-25 capture found a feedback loop: freshly-rotated
+    //    fleetmate addresses are unexcluded for up to one broadcast interval, get counted as real
+    //    ambient devices, and drive the population up (fleet-wide 32 -> 65 -> 33 -> 42 over an
+    //    hour, ambient provably flat throughout). Within a session that self-corrects. But the
+    //    inflated pop_ewma is written to flash every OBS_PERSIST_EVERY sweeps, so a reboot during
+    //    or after an excursion RESTORES the wrong answer and starts there. Observed directly: a C5
+    //    rebooted mid-session came up at active=32 in a room whose true ambient was ~8.
+    //
+    // Zeroing these means a rebooted board starts at GEN_FLOOR and grows into the room it is
+    // actually in, which is the safe direction -- under-populating briefly costs cover, whereas
+    // over-populating is the density tell the whole design exists to avoid.
+    m->pop_ewma        = 0.0f;
+    m->arrival_per_min = 0.0f;
     return 0;
 }

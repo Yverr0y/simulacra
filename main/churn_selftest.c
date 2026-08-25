@@ -686,10 +686,30 @@ static void test_rf_model_nvs(void)
     rf_model_observe(&m, 0x0075, -60, 3, 900);
     rf_model_end_sweep(&m, 3, 60000, 3);
 
+    ST_CHECK(m.pop_ewma > 0.0f, "sweep seeded a non-zero density (test premise)");
+
     ST_CHECK(rf_model_save_nvs(&m) == 0, "rf_model saves to NVS");
     rf_model_t r; memset(&r, 0xAA, sizeof(r));
     ST_CHECK(rf_model_load_nvs(&r) == 0, "rf_model loads from NVS");
-    ST_CHECK(memcmp(&m, &r, sizeof(m)) == 0, "rf_model NVS round-trips byte-exact");
+
+    // SHAPE round-trips byte-exact; DENSITY deliberately does not. Restoring pop_ewma across a
+    // reboot latches the 2026-08-25 feedback excursion into flash (an inflated estimate is written
+    // every OBS_PERSIST_EVERY sweeps) and also mis-sizes a fleet that has been carried to a
+    // different room. Zeroing it makes a rebooted board start at GEN_FLOOR and grow into the room
+    // it is actually in. See rf_model_load_nvs.
+    ST_CHECK(r.pop_ewma == 0.0f, "density is NOT restored from NVS");
+    ST_CHECK(r.arrival_per_min == 0.0f, "arrival rate is NOT restored from NVS");
+    {
+        rf_model_t shape = m;                       // same model with density stripped
+        shape.pop_ewma = 0.0f; shape.arrival_per_min = 0.0f;
+        ST_CHECK(memcmp(&shape, &r, sizeof(shape)) == 0,
+                 "everything EXCEPT density round-trips byte-exact");
+    }
+    // The histograms are the point of persisting at all -- a reboot must not forget what the
+    // devices around here look like, only how many there were.
+    ST_CHECK(r.total_obs == m.total_obs && r.sweeps == m.sweeps, "observation counters survive");
+    ST_CHECK(rf_vendor_index(&r, 0x004C) >= 0 && rf_vendor_index(&r, 0x0075) >= 0,
+             "vendor histogram survives the reboot");
 }
 
 static void test_vendor_mfg_builder(void)

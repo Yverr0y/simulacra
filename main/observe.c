@@ -121,7 +121,20 @@ size_t observe_ephemeral_count(void)
 
 static const char *TAG = "observe";
 #define OBS_SWEEP_MS       15000   // observation window (15 s: short enough for the ~13 s reader)
-#define OBS_PERSIST_EVERY  1       // persist + dump every N sweeps
+// Persist + dump every N sweeps. At OBS_SWEEP_MS = 15 s this is a ~1 KB blob to NVS every
+// N x 15 seconds.
+//
+// Was 1, i.e. a flash write every 15 seconds, continuously, forever -- ~240 writes/hour of a blob
+// that changes on every sweep, so NVS cannot skip them as no-ops. With 4 KB NVS pages and a ~1 KB
+// blob that is a page churn every few writes; the resulting erase rate is high enough to be a
+// genuine endurance concern on a device meant to run for days at a time, and NVS is where the
+// fleet key, the CONFIG replay floor, persisted threats and settings all live -- so wearing it out
+// does not degrade gracefully.
+//
+// 20 sweeps = every 5 minutes, a ~20x reduction. Safe now that pop_ewma is no longer restored on
+// load (see rf_model_load_nvs): what is being persisted is the slow-moving environment SHAPE, and
+// losing up to five minutes of histogram updates on an unclean reboot costs almost nothing.
+#define OBS_PERSIST_EVERY  20
 #define OBS_SCAN_ITVL      0x00A0  // 100 ms in 0.625 ms units
 #define OBS_SCAN_WIN       0x00A0  // 100 ms window == interval -> continuous passive scan
 
