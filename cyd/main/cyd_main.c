@@ -12,6 +12,7 @@
 #include "radar_render.h"
 #include "radar_gfx.h"
 #include "radar_wire.h"
+#include "radar_retx.h"
 #include "fleet_status.h"
 #include "radar_ui.h"
 #include "expo_sniff.h"
@@ -545,12 +546,20 @@ static void drain_rx(void){
     }
 }
 
+// Retransmit schedulers. Repeats are spread by a jittered 40-120 ms instead of blasted
+// back-to-back, so they stop reading as an obvious retransmit train on air.
+static radar_retx_t s_req_retx;
+static radar_retx_t s_cfg_retx;
+// REQUEST redundancy adapts to observed delivery (see the poll loop). CONFIG does not.
+static uint8_t      s_req_repeats = RADAR_RETX_MAX_REPEATS;
+
 static void send_request(void){
     uint8_t nonce[4]; esp_fill_random(nonce,4);
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
     uint64_t ctr; if (!next_ctr(&ctr)) return;
     if (radar_wire_seal(frame,&flen,RADAR_TYPE_REQUEST,nonce,4,tx_key(),s_salt,ctr)==0)
-        for (int i=0;i<4;i++) esp_now_send(BCAST,frame,flen);
+        radar_retx_arm(&s_req_retx, frame, flen, s_req_repeats,
+                       (uint32_t)(esp_timer_get_time()/1000));
 }
 #ifdef SIMULACRA_CONFIG_CTRL
 // Operator-set AUTO cap as a FLEET TOTAL (0 = uncapped). Decoys are additive and know nothing
@@ -583,9 +592,13 @@ static void send_config(uint8_t preset)
     uint8_t pl[CONFIG_WIRE_PAYLOAD_LEN];
     if (config_wire_pack_signed(pl, sizeof pl, &cmd, nonce12, SIMULACRA_CTRL_SK) < 0) return;
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
+    // CONFIG stays at an unconditional 4x, never adaptive. It is rare and operator-initiated, and a
+    // silently dropped command means the console reports a preset the fleet never applied -- the
+    // same "display lies about the firmware" failure class as DRIFT-1. Reliability wins here.
     if (radar_wire_seal(frame, &flen, RADAR_TYPE_CONFIG, pl, sizeof pl,
                         tx_key(), s_salt, ctr) == 0)
-        for (int i = 0; i < 4; i++) esp_now_send(BCAST, frame, flen);
+        radar_retx_arm(&s_cfg_retx, frame, flen, RADAR_RETX_MAX_REPEATS,
+                       (uint32_t)(esp_timer_get_time()/1000));
     ESP_LOGW(TAG, "sent CONFIG preset %u (cap %u total / %d nodes = %d each)",
              (unsigned)preset, (unsigned)s_cap_total, nodes, per_node);
 }
@@ -1109,8 +1122,23 @@ void app_main(void)
         // the channel, even without reading a sealed byte. Freshness is unaffected at this scale --
         // the stale threshold is 12 s.
         if (ui.backlight_on && !espnow_suspended && now - last_req > req_period) {
+            // Judge the cycle that just ended before starting a new one: did the fleet stay as
+            // populated as it was? fleet_alive_count() counts nodes whose last status is inside the
+            // stale window, so a node that answered is still counted and one that went quiet is not.
+            static int s_prev_alive = -1;
+            int alive = fleet_alive_count(now);
+            if (s_prev_alive >= 0)
+                s_req_repeats = radar_retx_adapt(s_req_repeats, alive >= s_prev_alive);
+            s_prev_alive = alive;
             send_request(); last_req = now;
             req_period = 1000 + (esp_random() % 601);
+        }
+        {   // Spread REQUEST/CONFIG repeats rather than bursting them back-to-back.
+            uint32_t rnow = (uint32_t)(esp_timer_get_time()/1000);
+            if (radar_retx_due(&s_req_retx, rnow, esp_random()))
+                esp_now_send(BCAST, s_req_retx.frame, s_req_retx.len);
+            if (radar_retx_due(&s_cfg_retx, rnow, esp_random()))
+                esp_now_send(BCAST, s_cfg_retx.frame, s_cfg_retx.len);
         }
         drain_rx();   // ALL frame processing, off the Wi-Fi driver task. Must sit OUTSIDE the
                       // provisioning gate: the baked fleet build has no FLEET_PROVISION, and with
@@ -1221,6 +1249,7 @@ void app_main(void)
                 .link_age_s = s_status_ms ? (now - s_status_ms) / 1000 : UINT32_MAX,
                 .build      = CYD_BUILD_TAG,
                 .page       = s_info_page,
+                .req_repeats = s_req_repeats,
             };
 #ifdef SIMULACRA_FLEET_PROVISION
             // The CONTROL page is static; re-rendering it every frame would re-flush the FLEET

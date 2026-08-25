@@ -5,7 +5,7 @@ SRC := synth_dump.c ble_hs_adv.c roster_stub.c \
        $(ROOT)/main/learn.c $(ROOT)/components/simulacra_radar/law3.c $(ROOT)/components/simulacra_radar/learn_wire.c \
        $(ROOT)/main/uniq_id.c $(ROOT)/main/phantom.c $(ROOT)/main/probe_agents.c $(ROOT)/main/ssid_pool.c $(ROOT)/main/probe_frame.c \
        $(ROOT)/main/fleet_pop.c $(ROOT)/main/fleet.c \
-       $(ROOT)/components/simulacra_radar/radar_pad.c
+       $(ROOT)/components/simulacra_radar/radar_pad.c $(ROOT)/components/simulacra_radar/radar_retx.c
 INC := -Ihost_stubs -I$(ROOT)/main -I$(ROOT)/components/simulacra_radar
 CFLAGS ?= -O2 -Wall -Wno-unused-parameter
 all: synth_dump

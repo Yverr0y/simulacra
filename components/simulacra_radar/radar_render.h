@@ -20,6 +20,11 @@ typedef struct {                 // CYD system/fleet snapshot for the INFO page
     uint32_t link_age_s;         // seconds since last status; UINT32_MAX = never
     const char *build;           // firmware/build tag, e.g. "cyd v2 flood"
     uint8_t  page;               // INFO view: 0 = system console, 1 = legend
+    // Live REQUEST redundancy. It relaxes toward 1 while every node answers and snaps back to the
+    // maximum on any miss, so a persistently elevated value IS the link-quality signal. Surfaced
+    // deliberately: an adaptive count that silently absorbed a degrading link would hide exactly
+    // the symptom an operator needs to see.
+    uint8_t  req_repeats;
 } radar_sys_info_t;
 // Honest at-a-glance protection posture (HOME headline). Priority HUNTED > DARK > EXPOSED > CLOAKED.
 typedef enum {

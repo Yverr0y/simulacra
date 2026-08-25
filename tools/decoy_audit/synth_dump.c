@@ -14,6 +14,7 @@
 #include "phantom.h"
 #include "probe_agents.h"
 #include "radar_pad.h"
+#include "radar_retx.h"
 
 static const char *atype_of(const uint8_t addr[6]) {
     switch (addr[5] >> 6) { case 3: return "static"; case 1: return "rpa";
@@ -252,6 +253,26 @@ int main(int argc, char **argv) {
         uint8_t a[6];
         make_random_addr(a, 0xc0);
         printf("%d\n", uniq_try(a) ? 1 : 0);   // 0 = routed (recorded), 1 = not routed
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--retx") == 0) {
+        int reps    = argc > 2 ? (int)strtol(argv[2], 0, 10) : 4;
+        unsigned sd = argc > 3 ? (unsigned)strtoul(argv[3], 0, 10) : 1;
+        uint32_t hz = argc > 4 ? (uint32_t)strtoul(argv[4], 0, 10) : 5000;
+        srand(sd);
+        radar_retx_t r; uint8_t rf[8] = {0};
+        radar_retx_arm(&r, rf, sizeof rf, (uint8_t)reps, 0);
+        for (uint32_t t = 0; t <= hz; t++)
+            if (radar_retx_due(&r, t, (uint32_t)rand())) printf("%u\n", (unsigned)t);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--retxadapt") == 0) {
+        uint8_t cur = argc > 2 ? (uint8_t)strtoul(argv[2], 0, 10) : 4;
+        const char *seq = argc > 3 ? argv[3] : "";
+        for (const char *p = seq; *p; p++) {
+            cur = radar_retx_adapt(cur, *p == '1');
+            printf("%u\n", (unsigned)cur);
+        }
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--padbucket") == 0) {

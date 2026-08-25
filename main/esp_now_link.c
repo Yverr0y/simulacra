@@ -48,6 +48,7 @@ void espnow_status_from_webui(radar_wire_status_t *out, const webui_status_t *in
 #include "sig_wire.h"
 #include "sig_store.h"
 #include "fleet.h"
+#include "radar_retx.h"
 #include "config_wire.h"
 #include "detect.h"
 #include "sim_ctrl_key.h"
@@ -344,6 +345,12 @@ static void espnow_drain_rx(void)
     }
 }
 
+// STATUS retransmits, spread rather than blasted back-to-back. Fixed 2x (down from 3x): a decoy
+// has no delivery feedback -- broadcast is unacknowledged and it never hears the Vigil's view -- so
+// adapting the count here would be guesswork. The Vigil's own re-request covers a lost STATUS
+// within one poll cycle.
+static radar_retx_t s_status_retx;
+
 // One sealed FLEET_MACS frame. Split out so the broadcast can chunk (see below).
 static void fleet_macs_send_chunk(const uint8_t (*macs)[6], size_t n)
 {
@@ -403,8 +410,9 @@ static void respond_once(void)
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
     if (radar_wire_seal(frame, &flen, RADAR_TYPE_STATUS, (uint8_t*)&r, sizeof r,
                         k, s_salt, ++s_counter) != 0) return;
-    for (int i = 0; i < 3; i++) esp_now_send(BCAST, frame, flen);   // 3x back-to-back
-    ESP_LOGW(ETAG, "answered request (%u B x3)", (unsigned)flen);
+    radar_retx_arm(&s_status_retx, frame, flen, 2,
+                   (uint32_t)(esp_timer_get_time() / 1000));
+    ESP_LOGW(ETAG, "answered request (%u B x2, spread)", (unsigned)flen);
 }
 
 static void offer_library(void)
@@ -447,6 +455,12 @@ static void espnow_task(void *arg)
             continue;
         }
         espnow_drain_rx();               // all frame processing happens here, off the driver task
+        {   // Spread STATUS repeats. The 50 ms task tick is comfortably finer than the 40-120 ms
+            // gaps, so no extra timer is needed.
+            uint32_t rnow = (uint32_t)(esp_timer_get_time() / 1000);
+            if (radar_retx_due(&s_status_retx, rnow, esp_random()))
+                esp_now_send(BCAST, s_status_retx.frame, s_status_retx.len);
+        }
         if (s_answer) { s_answer = false; respond_once(); }
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         if (now - last_offer > offer_period) {
