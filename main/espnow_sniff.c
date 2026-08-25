@@ -1,5 +1,6 @@
 #include "espnow_sniff.h"
 #include "radar_wire.h"
+#include "radar_key.h"          // SIMULACRA_ESPNOW_KEY: v4 needs the key to identify a frame
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -15,7 +16,7 @@ static const char *TAG = "esniff";
 //   [0..23]  802.11 MAC header (fctl,dur,DA,SA@10,BSSID,seq)
 //   [24]     category = 0x7f (vendor specific)   [25..27] OUI 18:fe:34   [28..31] random
 //   [32]     elem-id 0xdd  [33] len  [34..36] OUI 18:fe:34  [37] type 0x04  [38] version
-//   [39..]   ESP-NOW body == our radar_wire frame (magic 0x5A 0x4D ...)
+//   [39..]   ESP-NOW body == our radar_wire frame ([nonce(12)][ct][tag(16)] since wire v4)
 #define ENOW_HDR 39
 #define SRC_OFF  10
 
@@ -27,31 +28,43 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     if (type != WIFI_PKT_MGMT) return;
     const wifi_promiscuous_pkt_t *p = (const wifi_promiscuous_pkt_t *)buf;
     int len = p->rx_ctrl.sig_len;
-    if (len < ENOW_HDR + RADAR_HDR_LEN) return;
+    if (len < ENOW_HDR + RADAR_NONCE_LEN + RADAR_TAG_LEN) return;
     const uint8_t *f = p->payload;
     if (f[0] != 0xD0) return;                                              // action frame
     if (f[24] != 0x7F || f[25] != 0x18 || f[26] != 0xFE || f[27] != 0x34)  // Espressif vendor
         return;
     const uint8_t *ef = f + ENOW_HDR;                                      // our radar_wire frame
-    if (ef[0] != RADAR_MAGIC0 || ef[1] != RADAR_MAGIC1) return;            // not our link
+    size_t eflen = (size_t)(len - ENOW_HDR);
+
+    // Wire v4 removed the plaintext magic and type byte, so there is nothing to match on and the
+    // only way to identify a frame as ours is to AUTHENTICATE it. That is precisely the property
+    // this tool exists to verify: an adversary CANNOT do the next line, because it needs the key.
+    // `wtype` not `type`: the promiscuous callback's own parameter already owns that name.
+    uint8_t wtype, pl[RADAR_FRAME_MAX], salt[RADAR_SALT_LEN]; size_t plen; uint64_t ctr;
+    if (radar_wire_open(ef, eflen, SIMULACRA_ESPNOW_KEY,
+                        &wtype, pl, sizeof pl, &plen, salt, &ctr) != 0)
+        return;                                                            // not our link
+
     const uint8_t *sa = f + SRC_OFF;
     bool laa = (sa[0] & 0x02) != 0;                                        // locally-administered bit
 
-    if (ef[3] == RADAR_TYPE_REQUEST) {
+    if (wtype == RADAR_TYPE_REQUEST) {
         s_req++;
-        ESP_LOGW(TAG, "REQ  src=%02x:%02x:%02x:%02x:%02x:%02x %s",
-                 sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], laa ? "[LAA]" : "[FACTORY!]");
-    } else if (ef[3] == RADAR_TYPE_STATUS) {
+        ESP_LOGW(TAG, "REQ  src=%02x:%02x:%02x:%02x:%02x:%02x %s len=%u",
+                 sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], laa ? "[LAA]" : "[FACTORY!]",
+                 (unsigned)eflen);
+    } else if (wtype == RADAR_TYPE_STATUS) {
         s_status++;
         if (laa) s_status_laa++; else s_status_factory++;
         s_last_status_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        // ciphertext sample: 8 bytes after our 4B header + 12B nonce (proves it isn't plaintext status)
-        if (len >= ENOW_HDR + RADAR_HDR_LEN + RADAR_NONCE_LEN + 8) {
-            const uint8_t *ct = ef + RADAR_HDR_LEN + RADAR_NONCE_LEN;
-            ESP_LOGW(TAG, "STAT src=%02x:%02x:%02x:%02x:%02x:%02x %s ct=%02x%02x%02x%02x%02x%02x%02x%02x",
-                     sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], laa ? "[LAA]" : "[FACTORY!]",
-                     ct[0], ct[1], ct[2], ct[3], ct[4], ct[5], ct[6], ct[7]);
-        }
+        // Ciphertext sample straight after the 12-byte nonce (no header in v4), proving the status
+        // really is sealed on air. `len` is logged so bucketing is observable: every frame should
+        // land on 64/128/250 rather than a payload-shaped size.
+        const uint8_t *ct = ef + RADAR_NONCE_LEN;
+        ESP_LOGW(TAG, "STAT src=%02x:%02x:%02x:%02x:%02x:%02x %s len=%u ct=%02x%02x%02x%02x%02x%02x%02x%02x",
+                 sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], laa ? "[LAA]" : "[FACTORY!]",
+                 (unsigned)eflen,
+                 ct[0], ct[1], ct[2], ct[3], ct[4], ct[5], ct[6], ct[7]);
     }
 }
 

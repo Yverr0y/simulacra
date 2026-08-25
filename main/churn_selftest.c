@@ -20,6 +20,7 @@
 #include "radar_geom.h"
 #include "radar_ui.h"
 #include "radar_wire.h"
+#include "radar_pad.h"
 #include "radar_key.h"
 #include "config_wire.h"
 #include "enroll_wire.h"
@@ -1090,19 +1091,24 @@ static void test_radar_wire(void)
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen = 0;
     int rc = radar_wire_seal(frame, &flen, RADAR_TYPE_STATUS,
                              (uint8_t*)&st, sizeof st, SIMULACRA_ESPNOW_KEY, salt, 100);
-    ST_CHECK(rc == 0 && flen == RADAR_HDR_LEN + RADAR_NONCE_LEN + sizeof(st) + RADAR_TAG_LEN,
-             "seal produces a full frame");
-    ST_CHECK(frame[0] == RADAR_MAGIC0 && frame[3] == RADAR_TYPE_STATUS, "header intact");
-    // SEC-4: pin the v3 nonce layout on the wire. GCM nonce uniqueness rests on the salt width, so
-    // a silent revert to the 4-byte salt would quietly restore birthday-collision odds a long-lived
-    // fleet actually reaches -- and nothing else in the suite would notice.
-    ST_CHECK(frame[2] == 3, "wire version is 3");
-    ST_CHECK(memcmp(frame + RADAR_HDR_LEN, salt, RADAR_SALT_LEN) == 0,
-             "nonce carries the full 8-byte salt");
-    ST_CHECK(frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 0] == 0 &&
-             frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 1] == 0 &&
-             frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 2] == 0 &&
-             frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 3] == 100,
+    // v4: the frame is exactly one length bucket -- [nonce][padded ct][tag], no header.
+    ST_CHECK(rc == 0 && flen == RADAR_NONCE_LEN + radar_pad_plaintext_len(sizeof st) + RADAR_TAG_LEN,
+             "seal produces a full bucketed frame");
+    ST_CHECK(RADAR_WIRE_VER == 4, "wire version is 4");
+    // v4: NOTHING identifying may ride in the clear. The first bytes are the nonce, not a magic.
+    // A regression here re-exposes the "this is Simulacra, and that node is the controller"
+    // signature that v4 exists to remove, and no other assertion would catch it.
+    ST_CHECK(!(frame[0] == 0x5A && frame[1] == 0x4D), "no plaintext magic survives in v4");
+    // SEC-4: pin the nonce layout on the wire. GCM nonce uniqueness rests on the salt width, so a
+    // silent revert to the 4-byte salt would quietly restore birthday-collision odds a long-lived
+    // fleet actually reaches -- and nothing else in the suite would notice. v4 moved the nonce to
+    // offset 0 (the header is gone) but did NOT change its layout.
+    ST_CHECK(memcmp(frame, salt, RADAR_SALT_LEN) == 0,
+             "nonce carries the full 8-byte salt, at offset 0");
+    ST_CHECK(frame[RADAR_SALT_LEN + 0] == 0 &&
+             frame[RADAR_SALT_LEN + 1] == 0 &&
+             frame[RADAR_SALT_LEN + 2] == 0 &&
+             frame[RADAR_SALT_LEN + 3] == 100,
              "counter is 4 bytes big-endian after the salt");
 
     uint8_t type, pl[RADAR_FRAME_MAX], osalt[RADAR_SALT_LEN]; size_t plen = 0; uint64_t ctr = 0;
@@ -1122,6 +1128,34 @@ static void test_radar_wire(void)
         ST_CHECK(radar_wire_open(frame, flen, SIMULACRA_ESPNOW_KEY, &type, pl, sizeof(st),
                                  &plen, osalt, &ctr) == 0,
                  "exact-fit capacity still opens");
+    }
+
+    {   // Every bucket round-trips, and the payload survives padding byte for byte. Sizes chosen to
+        // land on both sides of each bucket boundary (33/34, 97/98) so an off-by-one in the
+        // arithmetic shows up here rather than as a truncated frame on air.
+        static const size_t SIZES[] = { 0, 1, 4, 33, 34, 67, 97, 98, 174, 219 };
+        uint8_t s8[RADAR_SALT_LEN]; for (int j = 0; j < RADAR_SALT_LEN; j++) s8[j] = (uint8_t)j;
+        for (size_t i = 0; i < sizeof SIZES / sizeof SIZES[0]; i++) {
+            uint8_t src[219], got[219]; size_t n = SIZES[i], glen = 0; uint8_t gt = 0;
+            for (size_t j = 0; j < n; j++) src[j] = (uint8_t)(j * 7 + i);
+            uint8_t f[RADAR_FRAME_MAX]; size_t fl = 0;
+            ST_CHECK(radar_wire_seal(f, &fl, RADAR_TYPE_STATUS, src, n,
+                                     SIMULACRA_ESPNOW_KEY, s8, 9) == 0, "bucket seal ok");
+            ST_CHECK(fl == RADAR_NONCE_LEN + radar_pad_plaintext_len(n) + RADAR_TAG_LEN,
+                     "sealed length is exactly the bucket");
+            uint8_t os2[RADAR_SALT_LEN]; uint64_t oc2 = 0;
+            ST_CHECK(radar_wire_open(f, fl, SIMULACRA_ESPNOW_KEY, &gt, got, sizeof got,
+                                     &glen, os2, &oc2) == 0, "bucket open ok");
+            ST_CHECK(gt == RADAR_TYPE_STATUS && glen == n, "type and length recovered");
+            ST_CHECK(n == 0 || memcmp(src, got, n) == 0, "payload survives padding");
+        }
+    }
+    {   // A payload larger than the biggest bucket must be REFUSED at seal time, never truncated --
+        // silently dropping the tail would corrupt a fleet sync with no error anywhere.
+        uint8_t big[240]; size_t fl = 0; uint8_t f[RADAR_FRAME_MAX];
+        uint8_t s8[RADAR_SALT_LEN]; for (int j = 0; j < RADAR_SALT_LEN; j++) s8[j] = (uint8_t)j;
+        ST_CHECK(radar_wire_seal(f, &fl, RADAR_TYPE_STATUS, big, sizeof big,
+                                 SIMULACRA_ESPNOW_KEY, s8, 10) < 0, "oversized payload refused");
     }
 
     frame[flen - 1] ^= 0x01;                                   // tamper the tag

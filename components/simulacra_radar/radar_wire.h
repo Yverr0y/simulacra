@@ -3,9 +3,23 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define RADAR_MAGIC0 0x5A
-#define RADAR_MAGIC1 0x4D
-#define RADAR_WIRE_VER 3      // v3: nonce is salt(8)||counter(4); v2 was salt(4)||counter(8)
+// v4 (2026-08-25): the plaintext header is GONE. A frame is [nonce(12)][ciphertext][tag(16)] and
+// nothing identifying rides in the clear. `type` moved into the first plaintext byte, so it is
+// encrypted and authenticated rather than merely authenticated as AAD.
+//
+// v3 framed every frame as [0x5A 0x4D | ver | type], which told any passive listener that this was
+// Simulacra specifically -- not merely "some Espressif device using ESP-NOW" -- and let them count
+// nodes, tell the controller from the decoys, and see exactly when commands were issued, all
+// without the key. Frame LENGTH leaked the same classification; radar_pad.h addresses that half.
+//
+// There is no magic byte to pre-filter on any more: a frame that is not ours fails the GCM tag and
+// is dropped. That costs one AES-GCM attempt per received ESP-NOW frame, which is acceptable --
+// the receive callback only fires for ESP-NOW frames addressed to broadcast or to us, and frames
+// are already copied into an SPSC ring and processed off the Wi-Fi driver task (the SEC-6 fix).
+//
+// The NONCE LAYOUT IS UNCHANGED in v4 (salt(8)||counter(4); v2 was salt(4)||counter(8)). Do not
+// touch it -- SEC-4 depends on that split.
+#define RADAR_WIRE_VER 4
 #define RADAR_TYPE_REQUEST 1
 #define RADAR_TYPE_STATUS  2
 #define RADAR_MAX_THREATS  8        // must match DETECT_MAX_THREATS
@@ -16,7 +30,6 @@
 #define RADAR_NONCE_LEN 12
 #define RADAR_SALT_LEN   8          // nonce = salt(8) || counter(4 BE)
 #define RADAR_TAG_LEN   16
-#define RADAR_HDR_LEN    4          // magic(2)+ver+type
 #define RADAR_FRAME_MAX 250
 
 typedef struct __attribute__((packed)) {
@@ -38,8 +51,11 @@ typedef struct __attribute__((packed)) {
 
 typedef struct { uint8_t salt[RADAR_SALT_LEN]; uint64_t counter; bool seen; } radar_replay_t;
 
-// Build [magic|ver|type|nonce|ct|tag] into frame. nonce = salt(4)|counter(8 BE). magic|ver|type
-// authenticated as AAD. Returns 0 on success, <0 on error; *frame_len set to total bytes.
+// Build [nonce|ct|tag] into frame, where ct = E(type || len(2 LE) || payload || padding). The
+// plaintext is padded to a bucket (radar_pad.h) so frame length does not classify traffic. There is
+// no AAD: no plaintext header remains, and `type` is covered by the tag as ciphertext instead.
+// Returns 0 on success, <0 on error (including a payload too large for any bucket);
+// *frame_len set to total bytes.
 int radar_wire_seal(uint8_t *frame, size_t *frame_len, uint8_t type,
                     const uint8_t *payload, size_t payload_len,
                     const uint8_t key[32], const uint8_t salt[RADAR_SALT_LEN], uint64_t counter);
