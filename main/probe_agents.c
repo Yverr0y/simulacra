@@ -154,6 +154,20 @@ int probe_agents_rotate_tick(uint32_t now_ms)
         if (a->alive && (int32_t)(now_ms - a->next_mac_rotate_ms) >= 0) {
             probe_random_mac(a->mac);
             a->seq = (uint16_t)(esp_random() & 0x0FFFu);
+            // The SAVED-NETWORK SET is redrawn too, for the same reason the sequence counter is:
+            // anything that survives a rotation links the old MAC to the new one. A directed probe
+            // carries a pool name plus a stable per-agent suffix ("spectrumsetup-a3"), so keeping it
+            // across a rotation would let an observer stitch the two identities together through
+            // the SSID string -- defeating the rotation entirely for any agent that names a network.
+            //
+            // Real phones DO carry their saved networks across a MAC rotation, and that is precisely
+            // the well-known randomisation defeat this project exists to avoid reproducing. Realism
+            // loses to unlinkability here, as it did for the persistent identity band.
+            //
+            // Redrawing also re-rolls WHETHER this agent names anything at all, so a namer can
+            // become wildcard-only and vice versa. That is correct: after a rotation the agent
+            // should read as an unrelated device, not the same one wearing a new address.
+            assign_ssids(a);
             a->next_mac_rotate_ms = now_ms + mac_rotate_base();
             rotated++;
         }

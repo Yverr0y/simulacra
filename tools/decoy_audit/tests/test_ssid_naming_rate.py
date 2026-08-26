@@ -48,6 +48,38 @@ class NamedProbeRateMatchesAmbient(unittest.TestCase):
                              "a second saved network should be rare (measured mean 1.05)")
 
 
+class NothingSurvivesAMacRotation(unittest.TestCase):
+    """Anything carried across a rotation links the old MAC to the new one.
+
+    The sequence counter was already re-randomised on rotation for exactly this reason. The
+    saved-network set was not, so an agent kept probing the same pool name plus its stable per-agent
+    suffix ("spectrumsetup-a3") -- letting an observer stitch the two identities together through
+    the SSID string and defeating the rotation for any agent that names a network.
+
+    Real phones DO carry saved networks across a MAC rotation. That is the well-known randomisation
+    defeat this project exists not to reproduce; realism loses to unlinkability, as it did for the
+    persistent identity band.
+    """
+
+    def _rotation_branch(self):
+        a = src("probe_agents.c")
+        i = a.index("next_mac_rotate_ms) >= 0")
+        return a[i:a.index("rotated++", i)]
+
+    def test_mac_is_redrawn(self):
+        self.assertIn("probe_random_mac", self._rotation_branch(),
+                      "rotation no longer draws a new MAC")
+
+    def test_sequence_counter_is_redrawn(self):
+        self.assertIn("a->seq", self._rotation_branch(),
+                      "the 802.11 sequence counter survives rotation, which links the two MACs")
+
+    def test_saved_network_set_is_redrawn(self):
+        self.assertIn("assign_ssids", self._rotation_branch(),
+                      "the SSID set survives rotation. A directed probe carries a stable "
+                      "per-agent suffixed name, so an observer links old MAC to new through it.")
+
+
 class SsidPoolStaysGeneric(unittest.TestCase):
     """The pool may never be sourced from a capture. Real probed SSIDs are people's networks."""
 
