@@ -1229,6 +1229,27 @@ void app_main(void)
         // new costs ZERO frames, so frequency is nearly free and the period can stay responsive.
         // The cost is now carried entirely by the periodic FULL resync (SYNC_FULL_EVERY sweeps),
         // which lands roughly every 12-18 min.
+        // Rotate this node's link identity -- source MAC AND wire salt, together. Both were drawn
+        // once at startup and never again, so the Vigil carried a stable identifier for its whole
+        // powered life while every other identifier the project emits is capped at 15 min. They
+        // rotate together because the salt is the first 8 bytes of every frame in cleartext: moving
+        // only the MAC would let an observer follow the salt instead, and vice versa.
+        //
+        // The Vigil matters more than a decoy here -- it is the node that transmits on the most
+        // regular cadence, so it is the easiest to follow.
+        //
+        // The counter is NOT reset. Nonce uniqueness needs (salt, counter) unique and a fresh salt
+        // gives that; resetting would break the decoys' monotonic CONFIG replay floor, which is
+        // counter-only and salt-independent (see ctr_reserve_block).
+        static uint32_t last_idrot = 0, idrot_period = 480000;
+        if (now - last_idrot > idrot_period) {
+            last_idrot = now;
+            idrot_period = 480000 + (esp_random() % 420001);   // 8-15 min
+            uint8_t nm[6]; esp_fill_random(nm, 6); nm[0] = (nm[0] & 0xFE) | 0x02;
+            esp_wifi_set_mac(WIFI_IF_STA, nm);
+            esp_fill_random(s_salt, RADAR_SALT_LEN);
+            ESP_LOGW(TAG, "link identity rotated");
+        }
         static uint32_t last_sync = 0, sync_period = 120000;
         if (now - last_sync > sync_period) {
             last_sync = now;

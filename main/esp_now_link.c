@@ -352,7 +352,42 @@ static void espnow_drain_rx(void)
 // has no delivery feedback -- broadcast is unacknowledged and it never hears the Vigil's view -- so
 // adapting the count here would be guesswork. The Vigil's own re-request covers a lost STATUS
 // within one poll cycle.
+#ifndef ESPNOW_IDROT_MIN_MS
+#define ESPNOW_IDROT_MIN_MS  480000u   // 8 min
+#endif
+#ifndef ESPNOW_IDROT_SPAN_MS
+#define ESPNOW_IDROT_SPAN_MS 420000u   // .. up to 15 min, at the ADDR_MAX_ONAIR_MS ceiling
+#endif
+
 static radar_retx_t s_status_retx;
+
+// Rotate this node's ESP-NOW LINK IDENTITY: source MAC and wire salt, together.
+//
+// Both were drawn ONCE at startup and never again, which made each board carry a stable identifier
+// for its entire powered life -- hours or days. Every other identifier in the project is capped at
+// ADDR_MAX_ONAIR_MS (15 min); these two were orders of magnitude longer, and they sit on the one
+// channel whose emission rate already isolates the fleet.
+//
+// THEY MUST ROTATE TOGETHER. The salt is the first 8 bytes of every frame, in cleartext (the nonce
+// is salt||counter). Rotating only the MAC would achieve nothing at all -- an observer simply
+// follows the salt instead, and vice versa. Two halves of one identity.
+//
+// Cost, accepted: a peer keys its replay window on the sender's salt, so each rotation opens a
+// fresh one. RADAR_REPLAY_PEERS is raised alongside this so a peer's high-water history spans
+// several rotations rather than being churned out by them.
+//
+// The counter deliberately does NOT reset. Nonce uniqueness needs (salt, counter) to be unique and
+// a fresh salt guarantees that on its own; resetting would also break the Vigil's monotonic CONFIG
+// floor, which is counter-only and salt-independent.
+static void espnow_rotate_link_identity(void)
+{
+    uint8_t mac[6];
+    esp_fill_random(mac, 6);
+    mac[0] = (mac[0] & 0xFE) | 0x02;                 // locally administered, unicast
+    esp_wifi_set_mac(WIFI_IF_STA, mac);              // best-effort; verified LAA on air by espnow_sniff
+    esp_fill_random(s_salt, sizeof s_salt);
+    ESP_LOGW(ETAG, "link identity rotated (mac %02x:%02x:.. salt refreshed)", mac[0], mac[1]);
+}
 
 // One sealed FLEET_MACS frame. Split out so the broadcast can chunk (see below).
 static void fleet_macs_send_chunk(const uint8_t (*macs)[6], size_t n)
@@ -535,10 +570,14 @@ static void espnow_task(void *arg)
     // 10-15 min away and pre-drawn besides, so 45-75 s is ample and costs ~1 frame. The RESYNC
     // sweep repairs drift and refreshes peer TTLs, so it must stay well inside FLEET_MAC_TTL_MS
     // (12 min) -- 3-4 min keeps the same 3x margin the old 20-30 s had against 90 s.
-    uint32_t last_offer = 0, last_fleet = 0, last_resync = 0;
+    uint32_t last_offer = 0, last_fleet = 0, last_resync = 0, last_idrot = 0;
     uint32_t offer_period  = 25000 + esp_random() % 10001;   // 25-35 s
     uint32_t fleet_period  = 45000 + esp_random() % 30001;   // 45-75 s  (delta)
     uint32_t resync_period = 180000 + esp_random() % 60001;  // 3-4 min  (full, TTL 12 min)
+    // Link identity (MAC + salt) on the same ceiling as every other identifier the project emits.
+    // Overridable so the rotation can actually be OBSERVED on air in a short bench run instead of
+    // waiting 15 minutes per sample; the shipped value is the real one.
+    uint32_t idrot_period  = ESPNOW_IDROT_MIN_MS + esp_random() % (ESPNOW_IDROT_SPAN_MS + 1);
     for (;;) {
         if (!fleet_key_have()) {         // seek-enrollment: can't seal; wait for a signed OFFER
             espnow_drain_rx();           // MUST still drain: the OFFER that keys us arrives here
@@ -587,6 +626,13 @@ static void espnow_task(void *arg)
             broadcast_fleet_macs(false);
         }
         fleet_macs_pump(now);        // release at most one queued chunk, on a jittered interval
+        // Rotate the link identity LAST in the tick, so nothing queued this pass is half-sent under
+        // the old MAC and half under the new one.
+        if (now - last_idrot > idrot_period) {
+            last_idrot = now;
+            idrot_period = ESPNOW_IDROT_MIN_MS + esp_random() % (ESPNOW_IDROT_SPAN_MS + 1);
+            espnow_rotate_link_identity();
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

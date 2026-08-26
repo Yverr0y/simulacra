@@ -68,7 +68,12 @@ typedef struct __attribute__((packed)) {
 // would make whichever is lower permanently unacceptable -- it would break multi-Vigil operation.
 // Per-salt state is what keeps several controllers workable.
 #ifndef RADAR_REPLAY_PEERS
-#define RADAR_REPLAY_PEERS 4
+// Raised from 4 on 2026-08-26, when senders began rotating their link identity (MAC + salt) every
+// 8-15 min. Each rotation presents a NEW salt, so a peer's history now churns through slots on a
+// schedule rather than only on genuine reboots. Eight covers roughly two hours of a sender's
+// rotations, which keeps the alternating-captures replay closed across a realistic session instead
+// of reopening every time the table wraps.
+#define RADAR_REPLAY_PEERS 8
 #endif
 typedef struct {
     struct { uint8_t salt[RADAR_SALT_LEN]; uint64_t counter; bool used; } peer[RADAR_REPLAY_PEERS];
