@@ -44,6 +44,23 @@ class NeverEmitAThreatSignature(unittest.TestCase):
                 "tracker. Every decoy built from it is a guaranteed tracker hit on bystanders' "
                 "phones.")
 
+    def test_service_uuid_pool_carries_no_threat_or_health_uuid(self):
+        """The flags+uuid16 pool is a second way to advertise a tracker's identifiers."""
+        _comps, uuids = seeded_threat_keys()
+        t = src(MAIN, "templates.c")
+        m = re.search(r"static const uint16_t SVC_UUIDS16\[\]\s*=\s*\{(.*?)\};", t, re.S)
+        self.assertIsNotNone(m, "SVC_UUIDS16 not found")
+        pool = {int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{4})", m.group(1))}
+        bad = pool & uuids
+        self.assertFalse(
+            bad, "SVC_UUIDS16 advertises %s, which sig_seed.c matches as a tracker. It may not "
+                 "trigger OUR matcher (that signature keys on service DATA, not a bare uuid list), "
+                 "but other detectors are not ours to predict."
+                 % ", ".join("0x%04X" % u for u in sorted(bad)))
+        self.assertNotIn(0xFD6F, pool,
+                         "0xFD6F is COVID Exposure Notification. Emitting it impersonates a "
+                         "public-health protocol for one entry's worth of variety.")
+
     def test_apple_model_byte_cannot_roll_a_forbidden_subtype(self):
         """Under 4C 00 the next byte selects the Continuity/Find My subtype.
 

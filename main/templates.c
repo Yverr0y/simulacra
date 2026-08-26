@@ -212,10 +212,34 @@ static void enc_tracker(struct ble_hs_adv_fields *f, uint8_t *sd)
     f->svc_data_uuid16 = sd; f->svc_data_uuid16_len = 12;
 }
 
-// Common 16-bit service UUIDs seen in ambient advertising (battery, device-info, HID, Fast Pair,
-// exposure-notification, env-sensing). Varied so the flags+uuid16 structure isn't a monoculture.
+// Common 16-bit service UUIDs seen in ambient advertising. Varied so the flags+uuid16 structure
+// isn't a monoculture. All standard GATT services plus one widely-deployed vendor service.
+//
+// TWO REMOVALS, 2026-08-26:
+//
+// 0xFD6F -- COVID Exposure Notification. Emitting it claims to be a public-health beacon. The
+// framework needs matching service DATA to be functional, so a bare UUID interferes with nothing,
+// but "technically inert" is not the standard: this project has no business impersonating a health
+// protocol for one entry's worth of variety in an eight-entry list.
+//
+// 0xFD5A -- Samsung SmartTag, which is a TRACKER service uuid seeded into this project's own
+// detector (sig_seed.c sig_id=2). It probably never triggered sig_match, because that signature
+// keys on service DATA and enc_svc_uuid16 emits a bare uuid LIST with no service data attached.
+// "Probably never triggered OUR matcher" is the wrong bar. Other tracker-detection implementations
+// are not ours to predict, and the rule set on 2026-08-26 is that a decoy never advertises a
+// tracker's identifiers at all. Removing it costs nothing measurable.
+//
+// Replacements are ordinary GATT services carried by fitness bands, sensors and peripherals.
 static const uint16_t SVC_UUIDS16[] = {
-    0x180F, 0x180A, 0x1812, 0x181A, 0xFD6F, 0xFE9F, 0xFD5A, 0xFDCD };
+    0x180F,   // Battery Service
+    0x180A,   // Device Information
+    0x1812,   // Human Interface Device
+    0x181A,   // Environmental Sensing
+    0x180D,   // Heart Rate
+    0x1816,   // Cycling Speed and Cadence
+    0x1826,   // Fitness Machine
+    0xFE9F,   // Google (ubiquitous, not a tracker signature)
+};
 static ble_uuid16_t s_svc_uuid;   // scratch for the picked UUID (single task, not reentrant)
 static void enc_svc_uuid16(struct ble_hs_adv_fields *f)
 {

@@ -82,6 +82,35 @@ static const device_template_t *pick_no_mfg_template(void)
 // Map a sampled company id -> a built payload + a representative archetype index (always valid).
 // 0x004C -> iBeacon; 0xFFFF (no-mfg) -> a beacon/tracker family; a templated company -> its template;
 // otherwise a generic vendor-mfg carrying that company id.
+// How many live decoys may share ONE learned shape, from how often that shape was actually seen.
+//
+// A learned skeleton is copied from a REAL nearby device: element order, lengths, and the fields
+// learn_strip keeps verbatim (flags, service-uuid lists, tx power, appearance). rand_mask
+// re-randomises the instance bytes, so identity does not leak -- but the SHAPE does not vary. With
+// a uniform pick per company, if the fleet had learned exactly one shape for vendor X then EVERY
+// decoy of vendor X rendered from that one skeleton, and an observer saw the original plus N
+// byte-shaped clones of it.
+//
+// For a common model that is fine and even correct: real crowds contain many identical handsets.
+// For a RARE device it is not -- several copies of something unusual is implausible on its face,
+// and the promotion gate (LEARN_MIN_SIGHTINGS within a sweep) filters slow advertisers, not rare
+// ones, so a rare-but-chatty device is exactly what gets learned.
+//
+// reinforce_count already distinguishes the two: it counts how often the shape was re-seen. Tie
+// the clone budget to it, so a shape seen once appears once and only a well-attested shape gets a
+// crowd. Cheap and self-correcting -- a genuinely common model earns its copies by being common.
+#define LEARN_CLONE_MAX 6
+static uint8_t learn_clone_budget(const learned_template_t *lt)
+{
+    uint32_t b = 1u + (uint32_t)lt->reinforce_count / 2u;
+    return (uint8_t)(b > LEARN_CLONE_MAX ? LEARN_CLONE_MAX : b);
+}
+
+// Per-shape usage within ONE roster build. generate_roster fills the whole roster in a single
+// pass, so counting here bounds concurrent live copies without any cross-call state.
+static uint8_t s_clone_used[LEARN_CAP];
+static void generate_reset_clone_budget(void) { memset(s_clone_used, 0, sizeof s_clone_used); }
+
 static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uint8_t *arch_idx)
 {
     // Prefer a learned shape for this company when one exists (adds real-world variety).
@@ -92,12 +121,16 @@ static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uin
             const learned_template_t *lt = learn_at(i);
             bool match = (company == RF_VENDOR_UNKNOWN) ? (lt->company_id == 0)
                                                         : (lt->company_id == company);
-            if (match) cand[k++] = i;
+            // Skip shapes that have already been cloned to their budget this build; falling
+            // through to a template is better than another copy of the same real device.
+            if (match && i < LEARN_CAP && s_clone_used[i] < learn_clone_budget(lt))
+                cand[k++] = i;
         }
         if (k > 0) {
             size_t pick = cand[esp_random() % k];
             uint16_t itvl;
             if (learn_render(learn_at(pick), out, len, &itvl) == 0) {
+                if (pick < LEARN_CAP && s_clone_used[pick] < 0xFF) s_clone_used[pick]++;
                 *arch_idx = (uint8_t)(templates_count() + pick);
                 return 0;
             }
@@ -180,6 +213,7 @@ static uint16_t diversify_fill(const rf_model_t *m, identity_t *id, uint16_t avo
 
 size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
 {
+    generate_reset_clone_budget();   // per-build: bound how often one real device gets cloned
     // build the vendor sampling table: occupied 24 slots + other(no-mfg 0xFFFF)
     uint32_t counts[RF_VENDOR_SLOTS + 1];
     uint16_t ids[RF_VENDOR_SLOTS + 1];
