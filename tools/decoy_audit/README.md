@@ -130,6 +130,10 @@ baseline     (2026-08-25, CLEAN)       16   0.925      0.925      0.144      0.0
 errands.pcap (2026-07-21, DRIVING)   2071   0.689      0.689      0.035      0.089      0.004
 ```
 
+> **FIXED 2026-08-26 - the table above is the DIAGNOSIS, kept for the reasoning. Current numbers are
+> at the end of this section.** AD structure is now learned from `rf_model` like intervals and
+> vendors, so it tracks the room instead of one July capture.
+
 **`ad_structure` is 0.153 on the capture it was tuned on and 0.27-0.93 on three it has never seen.**
 The cause is visible in one row of data - the flags-only (`01`) device share that
 `pick_no_mfg_template()` hardcodes at ~62%:
@@ -174,6 +178,38 @@ over-fit one capture" - that is what happened.
 **Fix direction:** observe AD structure into `rf_model_t` and drive `pick_no_mfg_template()` from
 the learned histogram, exactly as intervals and vendors already work. Re-tuning the literals against
 a different capture would only move the overfit.
+
+### AD structure, after learning it (2026-08-26)
+
+Done as described, in two passes. `rf_model_t` gained `adstruct_bins` (no-mfg shape mix) and then
+`mfgstruct_bins`, both fed from `observe.c` and decayed on the same rolling window as every other
+histogram. The old literals survive only as the cold-start default, used until the model has seen
+`RF_ADSTRUCT_MIN_OBS` adverts.
+
+The second pass was necessary because fixing the no-mfg mix moved the residual one layer down:
+`enc_vendor_mfg` emitted exactly one shape, `01,ff`, whose real share measures **100.0% / 50.0% /
+15.6% / 0.0%** across the four captures. Identical in character to the flags-only collapse, so it is
+learned too rather than replaced with a fixed varied set. Bare `ff` (a vendor advert with **no flags
+element**, 43.1% of one capture's vendor devices) could not be emitted at all before.
+
+```
+                        hardcoded   no-mfg learned   both learned
+long.pcap (TUNED ON)        0.153            0.083          0.088
+newlong.pcap                0.269            0.225          0.093
+errands.pcap (drive)        0.689            0.691          0.381
+baseline 2026-08-25         0.925            0.791          0.342
+```
+
+Spread **[0.153-0.925] -> [0.088-0.381]**, and the capture the constants were originally fitted to
+improved as well, which is what replacing a fitted constant with something that tracks should do.
+`ad_structure` is no longer the headline tell on three of the four captures; worst-case headline
+across all captures falls **0.925 -> 0.448**.
+
+**`presence_duration` (0.284-0.448) is now the worst axis.** That is a deliberate, accepted cost:
+the persistent identity band was removed on 2026-08-26, so the fleet no longer reproduces ambient's
+long presence tail. A decoy that outlives the thing it covers is a tracking handle, and closing this
+axis by re-adding long-lived identities is the one fix that must not be applied. See
+`tests/test_addr_onair_cap.py`, which exists to fail if it is.
 
 **AD-structure: found at 0.88, closed to 0.15 (2026-07-13).** Adding the tell exposed a gap the
 three distributional tells were blind to - the decoys advertised beacon-rich payloads (`01,03,16`

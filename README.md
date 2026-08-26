@@ -263,6 +263,22 @@ Each tool has its own README with build and run steps.
 Newest first - full history in [`CHANGELOG.md`](CHANGELOG.md). Forward-looking milestones live in
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+- **No persistent identifiers, anywhere.** A slice of the crowd used to hold one static address for
+  4-12 h so the fleet would reproduce the long presence tail real environments have. That inverted
+  the point - a decoy holding one address for hours, carried by the operator, is a *better* tracking
+  handle than the phone it covers. A 15-minute ceiling now applies across both radios, matching real
+  phone RPA rotation, and static devices honour it by dying and being reborn as wholly new devices.
+- **AD structure and Wi-Fi probe shape are learned, not hardcoded.** Both were fitted to single
+  captures and did not survive a change of environment; a census of 877 real probing devices found
+  none of the shipped Wi-Fi IE layouts present even once. Structure now tracks the room the way
+  intervals and vendor mix already did. Cross-validated AD-structure separability
+  **[0.153-0.925] -> [0.088-0.381]**.
+- **Decoys never emit a tracker signature.** Three paths could make a decoy match this project's own
+  tracker detector, meaning nearby phones would warn their owners that an unknown tracker was
+  travelling with them. All closed, behind a fail-closed gate.
+- **The ESP-NOW link went quiet.** Measured from outside, ~99 vendor action frames/min against an
+  ambient median of zero, most of it the Vigil rebroadcasting its whole library every 20 s.
+  Now delta-based and jittered: **66.9/min -> 4.2/min**.
 - **Project wiki.** A full [CYD console guide + reference](https://github.com/Em3ritus/simulacra/wiki)
   (every screen, setting, preset, and status word explained) and a project-wide glossary, published
   and linked from the README.
