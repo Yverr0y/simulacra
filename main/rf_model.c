@@ -81,6 +81,52 @@ bool rf_adstruct_sample(const rf_model_t *m, uint32_t r, uint8_t *out_bin)
     return true;
 }
 
+// Classify an MFG-BEARING advert by its most distinctive extra element. Priority order, because a
+// device may carry several and the generator emits one variant: a name is the most visible thing an
+// advert can add, appearance and tx-power are structural markers, and the absence of a flags
+// element is itself distinctive (bare "ff" was 43.1% of one capture's vendor devices).
+uint8_t rf_mfgstruct_bin(const uint8_t *ad, uint8_t len)
+{
+    bool has_flags = false, has_name = false, has_appear = false, has_txp = false;
+    for (uint8_t i = 0; i + 1 < len; ) {
+        uint8_t l = ad[i];
+        if (l == 0) break;
+        if ((uint16_t)i + 1 + l > len) break;
+        switch (ad[i + 1]) {
+            case 0x01: has_flags  = true; break;
+            case 0x08: case 0x09: has_name = true; break;
+            case 0x19: has_appear = true; break;
+            case 0x0A: has_txp    = true; break;
+            default: break;
+        }
+        i = (uint8_t)(i + 1 + l);
+    }
+    if (has_name)   return RF_MFGS_NAME;
+    if (has_appear) return RF_MFGS_APPEARANCE;
+    if (has_txp)    return RF_MFGS_TXPOWER;
+    return has_flags ? RF_MFGS_FLAGS_MFG : RF_MFGS_MFG_ONLY;
+}
+
+void rf_model_observe_mfgstruct(rf_model_t *m, uint8_t bin)
+{
+    if (bin < RF_MFGSTRUCT_BINS) m->mfgstruct_bins[bin]++;
+}
+
+// Every bucket here is emittable (unlike RF_ADS_OTHER), so the draw spans all of them.
+bool rf_mfgstruct_sample(const rf_model_t *m, uint32_t r, uint8_t *out_bin)
+{
+    uint32_t tot = 0;
+    for (size_t b = 0; b < RF_MFGSTRUCT_BINS; b++) tot += m->mfgstruct_bins[b];
+    if (tot < RF_ADSTRUCT_MIN_OBS) return false;
+    uint32_t x = r % tot;
+    for (size_t b = 0; b < RF_MFGSTRUCT_BINS; b++) {
+        if (x < m->mfgstruct_bins[b]) { *out_bin = (uint8_t)b; return true; }
+        x -= m->mfgstruct_bins[b];
+    }
+    *out_bin = RF_MFGS_FLAGS_MFG;
+    return true;
+}
+
 size_t rf_rssi_bin(int8_t rssi)
 {
     int idx = (rssi + 100) / 10;          // -100 -> 0, -20 -> 8
@@ -128,6 +174,8 @@ void rf_model_decay(rf_model_t *m)
     // that never aged out would just reproduce the original defect more slowly.
     for (size_t b = 0; b < RF_ADSTRUCT_BINS; b++)
         m->adstruct_bins[b] = decayed(m->adstruct_bins[b]);
+    for (size_t b = 0; b < RF_MFGSTRUCT_BINS; b++)
+        m->mfgstruct_bins[b] = decayed(m->mfgstruct_bins[b]);
 }
 
 void rf_model_observe(rf_model_t *m, uint16_t company_id, int8_t rssi,

@@ -83,5 +83,56 @@ class AdStructureIsLearnedNotHardcoded(unittest.TestCase):
                       "reproduces the fixed-constant defect more slowly.")
 
 
+
+class MfgStructureIsLearnedToo(unittest.TestCase):
+    """The same problem one layer down, found once the no-mfg mix was learned.
+
+    enc_vendor_mfg emitted exactly one shape, flags+mfg ("01,ff"). Its real share across four
+    decoy-free captures: 100.0% / 50.0% / 15.6% / 0.0% -- the same collapse that made the hardcoded
+    no-mfg mix a single-capture overfit. Learned rather than replaced with a fixed varied set,
+    because a fixed set is precisely the mistake being corrected.
+
+    Cross-validated ad_structure: 0.153/0.269/0.689/0.925 (hardcoded) -> 0.083/0.225/0.691/0.791
+    (no-mfg learned) -> 0.088/0.093/0.381/0.342 (both learned).
+    """
+
+    def test_model_carries_a_mfgstruct_histogram(self):
+        h = src("rf_model.h")
+        self.assertIn("mfgstruct_bins", h, "rf_model_t lost the mfg-structure histogram")
+        self.assertIn("RF_MFGS_MFG_ONLY", h,
+                      "the bare-'ff' bucket is gone; a device with NO flags element is a real and "
+                      "common shape (43.1% of one capture's vendor devices).")
+
+    def test_generator_samples_it(self):
+        g = src("generate.c")
+        self.assertIn("rf_mfgstruct_sample", g, "the mfg variant is no longer drawn from the model")
+        self.assertIn("template_apply_mfg_variant", g, "the drawn variant is never applied")
+
+    def test_variant_applies_only_to_mfg_bearing_payloads(self):
+        """Beacons and terse advertisers have their own structure and must not be reshaped."""
+        g = src("generate.c")
+        self.assertRegex(
+            g, r"company\s*!=\s*RF_VENDOR_UNKNOWN[\s\S]{0,200}?rf_mfgstruct_sample",
+            "the mfg variant must be gated on the payload actually carrying mfg data; applying it "
+            "to the no-mfg mass would reshape a population it does not describe.")
+
+    def test_variant_is_appended_not_set_via_fields(self):
+        """NimBLE's fixed field order would emit 01,19,ff where real devices emit 01,ff,19."""
+        t = src("templates.c")
+        body = t.split("int template_apply_mfg_variant", 1)[-1]
+        self.assertIn("0x19", body, "appearance variant missing")
+        self.assertIn("0x0A", body, "tx-power variant missing")
+        self.assertRegex(body, r"payload\[n\+\+\]",
+                         "variants must be APPENDED for exact element order; setting adv_fields "
+                         "members puts appearance before mfg and the host serializer supports "
+                         "neither field at all.")
+
+    def test_mfg_only_strips_the_flags_element(self):
+        t = src("templates.c")
+        body = t.split("int template_apply_mfg_variant", 1)[-1]
+        self.assertRegex(body, r"payload\[0\]\s*==\s*0x02\s*&&\s*payload\[1\]\s*==\s*0x01",
+                         "RF_MFGS_MFG_ONLY must remove the leading flags element, or bare 'ff' "
+                         "cannot be emitted at all.")
+
 if __name__ == "__main__":
     unittest.main()

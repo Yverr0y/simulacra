@@ -63,6 +63,12 @@ static int load_model_seed(const char *path, rf_model_t *m) {
     while (fgets(line, sizeof line, fp)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         if (!strncmp(line, "POP", 3)) { sscanf(line + 3, "%f", &m->pop_ewma); continue; }
+        if (!strncmp(line, "MFGS", 4)) {
+            unsigned a[RF_MFGSTRUCT_BINS] = {0};
+            sscanf(line + 4, "%u %u %u %u %u", &a[0], &a[1], &a[2], &a[3], &a[4]);
+            for (int i = 0; i < RF_MFGSTRUCT_BINS; i++) m->mfgstruct_bins[i] = a[i];
+            continue;
+        }
         if (!strncmp(line, "ADS", 3)) {
             unsigned a[RF_ADSTRUCT_BINS] = {0};
             sscanf(line + 3, "%u %u %u %u", &a[0], &a[1], &a[2], &a[3]);

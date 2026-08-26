@@ -31,6 +31,27 @@ enum {
     RF_ADS_OTHER,            // name-only, empty, or anything else with no mfg data
 };
 
+// MFG-BEARING structure, the same problem one layer down.
+//
+// Once the no-mfg mix was learned (2026-08-26) the residual separability moved here.
+// enc_vendor_mfg emits exactly one shape, flags+mfg ("01,ff"), and a census across four decoy-free
+// captures shows that shape's real share is 100.0% / 50.0% / 15.6% / 0.0%. Identical in character
+// to the flags-only share (52.7% / 6.7% / 0.3% / 0.0%) that made the hardcoded no-mfg mix a
+// single-capture overfit -- so this is learned rather than replaced with a fixed varied set.
+//
+// Classified by the most DISTINCTIVE element present, because a device may carry several and the
+// generator can only emit one variant. Devices whose extra elements we have no variant for land in
+// the closest bucket rather than a catch-all; there is no OTHER here, since every advert in this
+// population carries mfg data by definition.
+#define RF_MFGSTRUCT_BINS 5
+enum {
+    RF_MFGS_FLAGS_MFG = 0,   // "01,ff" -- flags + mfg, the only shape ever emitted before
+    RF_MFGS_MFG_ONLY,        // "ff"    -- mfg with NO flags element at all
+    RF_MFGS_NAME,            // carries a local name (0x08/0x09) alongside mfg
+    RF_MFGS_APPEARANCE,      // carries appearance (0x19)
+    RF_MFGS_TXPOWER,         // carries tx power level (0x0a)
+};
+
 typedef struct {
     uint16_t company_id;
     uint32_t count;
@@ -47,7 +68,8 @@ typedef struct {
     uint32_t    other_itvl_bins[RF_ITVL_BINS];
     uint32_t    rssi_bins[RF_RSSI_BINS];
     uint32_t    pdu_bins[RF_PDU_BINS];
-    uint32_t    adstruct_bins[RF_ADSTRUCT_BINS];   // no-mfg AD shape mix (see RF_ADS_* above)
+    uint32_t    adstruct_bins[RF_ADSTRUCT_BINS];    // no-mfg AD shape mix (see RF_ADS_* above)
+    uint32_t    mfgstruct_bins[RF_MFGSTRUCT_BINS];  // mfg-bearing shape mix (see RF_MFGS_* above)
     float       pop_ewma;          // EWMA of distinct devices per sweep
     float       arrival_per_min;   // EWMA of new distinct devices per minute
 } rf_model_t;
@@ -69,6 +91,10 @@ uint8_t rf_adstruct_bin(const uint8_t *ad, uint8_t len);
 // Sample the learned no-mfg structure mix. Returns an RF_ADS_* value, or RF_ADS_OTHER-with-false
 // when the model holds too little to sample -- callers then keep their cold-start default.
 bool   rf_adstruct_sample(const rf_model_t *m, uint32_t r, uint8_t *out_bin);
+// Same three, for the MFG-bearing population. Only called when the advert carries mfg data.
+void   rf_model_observe_mfgstruct(rf_model_t *m, uint8_t bin);
+uint8_t rf_mfgstruct_bin(const uint8_t *ad, uint8_t len);
+bool   rf_mfgstruct_sample(const rf_model_t *m, uint32_t r, uint8_t *out_bin);
 // Fold a completed sweep's distinct-device aggregates (EWMA).
 void   rf_model_end_sweep(rf_model_t *m, uint32_t distinct_devices, uint32_t window_ms,
                           uint32_t arrivals);

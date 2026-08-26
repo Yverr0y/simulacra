@@ -247,6 +247,8 @@ static int observe_gap_event(struct ble_gap_event *event, void *arg)
     // from the live environment is what lets structure track the room like intervals already do.
     if (!has_mfg)
         rf_model_observe_adstruct(&s_model, rf_adstruct_bin(d->data, (uint8_t)d->length_data));
+    else
+        rf_model_observe_mfgstruct(&s_model, rf_mfgstruct_bin(d->data, (uint8_t)d->length_data));
     observe_ingest(&s_model, d->addr.val, now, company, d->rssi, d->legacy_event_type);  // MAC dropped inside
     if (!s_window_mode) observe_maybe_close_sweep(now);      // window mode closes explicitly
     return 0;

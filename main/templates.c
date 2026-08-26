@@ -1,5 +1,6 @@
 #include <string.h>
 #include "templates.h"
+#include "rf_model.h"   // RF_MFGS_*: the learned mfg-structure variants
 #include "esp_random.h"
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
@@ -99,6 +100,18 @@ static uint8_t rnd_tx_ref(void)
 {
     return (uint8_t)(256 - (53 + (esp_random() % 16)));   // two's-complement -53..-68 dBm
 }
+
+// Standard GATT appearance values, for the RF_MFGS_APPEARANCE variant. Ordinary consumer
+// categories only -- appearance is a device CLASS, not an instance identifier, so a shared value
+// is correct here in the same way a shared company id is.
+static const uint16_t APPEARANCES[] = {
+    0x0040,   // Generic Phone
+    0x00C0,   // Generic Watch
+    0x0341,   // Running / Walking Sensor
+    0x0180,   // Generic Display
+    0x03C1,   // Keyboard
+    0x0941,   // Generic Audio Sink (earbuds / speakers)
+};
 
 size_t templates_count(void) { return sizeof(TEMPLATES) / sizeof(TEMPLATES[0]); }
 const device_template_t *template_at(size_t i) { return &TEMPLATES[i]; }
@@ -319,4 +332,57 @@ int template_build_phone(bool apple, uint8_t out_payload[31], uint8_t *out_len, 
     *out_len = len;
     *out_itvl_ms = rnd_range(PHONE_ITVL_MIN_MS, PHONE_ITVL_MAX_MS);
     return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// MFG-BEARING STRUCTURE VARIANTS
+//
+// enc_vendor_mfg produced exactly one shape: flags + mfg ("01,ff"). A census across four
+// decoy-free captures put that shape's real share at 100.0% / 50.0% / 15.6% / 0.0% -- the same
+// collapse that made the hardcoded no-mfg mix a single-capture overfit. The variant is therefore
+// chosen from the LEARNED mix (rf_mfgstruct_sample) rather than fixed here, and this function only
+// applies the choice.
+//
+// Applied by APPENDING to the serialized payload rather than by setting ble_hs_adv_fields members.
+// Two reasons. The host audit's serializer supports neither appearance nor tx-power, so the audit
+// would measure bytes the firmware never emits. And NimBLE's field order is fixed, which would
+// place appearance BEFORE mfg -- yielding "01,19,ff" where real devices emit "01,ff,19". Appending
+// gives exact control of element order and is identical on host and target because it is our code.
+//
+// AD element layout is [len][type][value...], len counting the type byte.
+int template_apply_mfg_variant(uint8_t *payload, uint8_t *len, uint8_t variant)
+{
+    if (!payload || !len) return 1;
+    uint8_t n = *len;
+    switch (variant) {
+        case RF_MFGS_MFG_ONLY: {
+            // Strip a leading flags element (0x02,0x01,<v>) so the advert is bare "ff". Real
+            // devices genuinely do this -- 43.1% of one capture's vendor devices had no flags.
+            if (n >= 3 && payload[0] == 0x02 && payload[1] == 0x01) {
+                memmove(payload, payload + 3, (size_t)(n - 3));
+                *len = (uint8_t)(n - 3);
+            }
+            return 0;
+        }
+        case RF_MFGS_APPEARANCE: {
+            if ((int)n + 4 > 31) return 0;                 // no room: keep the base shape
+            uint16_t ap = APPEARANCES[esp_random() % (sizeof APPEARANCES / sizeof APPEARANCES[0])];
+            payload[n++] = 0x03; payload[n++] = 0x19;
+            payload[n++] = (uint8_t)(ap & 0xFF);
+            payload[n++] = (uint8_t)(ap >> 8);
+            *len = n;
+            return 0;
+        }
+        case RF_MFGS_TXPOWER: {
+            if ((int)n + 3 > 31) return 0;
+            payload[n++] = 0x02; payload[n++] = 0x0A;
+            payload[n++] = rnd_tx_ref();                   // same per-instance draw as beacons
+            *len = n;
+            return 0;
+        }
+        case RF_MFGS_NAME:                                 // name is set through the fields path
+        case RF_MFGS_FLAGS_MFG:
+        default:
+            return 0;                                      // base shape already correct
+    }
 }

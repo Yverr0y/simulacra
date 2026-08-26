@@ -131,13 +131,23 @@ def build_profile(adverts):
     # firmware only uses for its first few seconds in an unknown room.
     # Device-weighted and no-mfg-only for the same reasons the firmware applies: an advert carrying
     # mfg data takes its shape from that vendor's template, not from this mix.
-    adstruct=[0,0,0,0]     # FLAGS_ONLY, UUID16, SVCDATA, OTHER
+    adstruct=[0,0,0,0]      # FLAGS_ONLY, UUID16, SVCDATA, OTHER
+    # And the MFG-BEARING mix, mirroring rf_mfgstruct_bin()'s priority order: name beats
+    # appearance beats tx-power, and the ABSENCE of a flags element is itself the distinguishing
+    # feature of the bare-"ff" bucket. Same reason as adstruct -- without this the audit scores
+    # generate.c's fallback rather than the learned path.
+    mfgstruct=[0,0,0,0,0]   # FLAGS_MFG, MFG_ONLY, NAME, APPEARANCE, TXPOWER
     for addr,sigs in dev_ad.items():
         nz=[(c,cnt) for c,cnt in dev_co[addr].items() if c]
-        if nz:
-            continue                                   # has mfg data -> not part of the no-mfg mix
         sig=max(sigs.items(),key=lambda x:x[1])[0]
         parts=[p for p in sig.split(",") if p]
+        if nz:                                         # has mfg data
+            if   "08" in parts or "09" in parts: mfgstruct[2]+=1
+            elif "19" in parts:                  mfgstruct[3]+=1
+            elif "0a" in parts:                  mfgstruct[4]+=1
+            elif "01" in parts:                  mfgstruct[0]+=1
+            else:                                mfgstruct[1]+=1
+            continue
         if   "16" in parts:                    adstruct[2]+=1
         elif "02" in parts or "03" in parts:   adstruct[1]+=1
         elif parts==["01"]:                    adstruct[0]+=1
@@ -168,6 +178,7 @@ def build_profile(adverts):
             "vendor":{k:v/vtot for k,v in ven.items()},
             "ad_sig":{k:v/adtot for k,v in ads.items()},
             "adstruct":adstruct,
+            "mfgstruct":mfgstruct,
             "presence_ms_bins":pbins}
     rh = rssi_hist([a.get("rssi") for a in adverts])
     if rh:
@@ -198,6 +209,13 @@ def write_model_seed(profile, path):
         tot_b = sum(ads_b)
         if tot_b:
             f.write("ADS %s\n" % " ".join(str(int(round(1000.0 * x / tot_b))) for x in ads_b))
+        # Same for the MFG-BEARING mix. Without it the audit scores generate.c's fallback, not the
+        # learned variant draw, and the ad_structure number would describe a path the firmware
+        # leaves almost immediately.
+        mfg_b = profile.get("mfgstruct") or [0, 0, 0, 0, 0]
+        tot_m = sum(mfg_b)
+        if tot_m:
+            f.write("MFGS %s\n" % " ".join(str(int(round(1000.0 * x / tot_m))) for x in mfg_b))
 
 def main():
     adv=parse_adverts(sys.argv[1]); prof=build_profile(adv)

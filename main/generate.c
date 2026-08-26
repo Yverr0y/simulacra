@@ -279,6 +279,17 @@ size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
         }
         id->company_id = company;
         id->tx_power = dither_tx();
+        // MFG-BEARING structure, from the learned mix. enc_vendor_mfg emits one shape ("01,ff")
+        // whose real share measured 100.0% / 50.0% / 15.6% / 0.0% across four decoy-free captures
+        // -- the same collapse that made the hardcoded no-mfg mix a single-capture overfit, so it
+        // is sampled rather than fixed. Applied only where the payload actually carries mfg data:
+        // service-data beacons and terse advertisers have their own structure and must not be
+        // reshaped by a mix describing a different population.
+        if (id->payload_len && company != RF_VENDOR_UNKNOWN) {
+            uint8_t mv;
+            if (rf_mfgstruct_sample(m, esp_random(), &mv))
+                template_apply_mfg_variant(id->payload, &id->payload_len, mv);
+        }
         // Fail-closed emission gate on the TEMPLATE path. learn.c has re-rolled forbidden bytes
         // since it was written; nothing checked template output, and the check is not redundant:
         // enc_vendor_mfg draws a random model byte straight after the company id, so an Apple
