@@ -41,10 +41,8 @@ class Spawn(unittest.TestCase):
         self.assertLess(c["static"],  0.90 * tot, "static subtype monoculture")
 
     def test_role_split_about_70_30(self):
-        # More devices are now STATIC (75% weight, was 52%), so more of the population is eligible
-        # for the persistent-static branch, shrinking the transient/resident share of ALL births
-        # (persistent devices are a separate role, diluting this count) -- a legitimate consequence
-        # of the 2026-07-21 atype rebalance, not a regression. See test_subtype_mix_realistic above.
+        # Only two roles remain (2026-08-26): the persistent branch that used to dilute this count
+        # is gone, so transient + resident now account for every birth.
         rows = [r for r in sim(5, n=32) if r[5] == "born"]
         c = Counter(r[4] for r in rows); tot = sum(c.values())
         self.assertGreater(c["transient"], 0.35 * tot, "transient share too low")
@@ -54,13 +52,18 @@ class Spawn(unittest.TestCase):
         rows = sim(3, n=16)
         self.assertTrue(all(itvl > 0 for *_, itvl in rows), "a device has zero advertising interval")
 
-    def test_persistent_cohort_is_static(self):
-        # A slice of the fleet are PERSISTENT infrastructure: long-lived and ALWAYS static (only a
-        # non-rotating address can actually persist on air), matching the real >2h presence tail.
+    def test_no_persistent_cohort_exists(self):
+        # INVERTED 2026-08-26. This test used to REQUIRE a persistent cohort: long-lived, always
+        # static, holding one address for 4-12 h to reproduce the real ambient >2h presence tail.
+        # That role was removed because it inverted the project's purpose - an address held for
+        # hours on a carried board is a better tracking handle than the phone it covers, which
+        # rotates its RPA every ~15 min. The requirement is now the opposite: no such cohort may
+        # exist. See tests/test_addr_onair_cap.py for the ceiling that replaced it.
         rows = sim(31, n=32, ticks=8000, tick_ms=1000)
         persist = [r for r in rows if r[4] == "persistent"]
-        self.assertTrue(persist, "no persistent devices spawned")
-        self.assertTrue(all(r[3] == "static" for r in persist), "a persistent device was not static")
+        self.assertFalse(persist,
+                         "a persistent role reappeared: %d spawns. No decoy identity may outlive "
+                         "ADDR_MAX_ONAIR_MS." % len(persist))
 
 @unittest.skipUnless(os.path.exists(EXE), "synth_dump not built")
 class Rotation(unittest.TestCase):
