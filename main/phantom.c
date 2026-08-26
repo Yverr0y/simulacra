@@ -73,12 +73,22 @@ void phantom_set_count(int n, uint32_t now_ms)
 int phantom_count(void) { return s_n; }
 const phantom_t *phantom_at(int i) { return (i >= 0 && i < s_n) ? &s_ph[i] : 0; }
 
+// A persona's Wi-Fi structure. What matters is that ONE persona always probes with the SAME
+// structure for its whole life: an identity whose frame shape changed underneath it would be
+// visibly incoherent, and coherence is the entire point of binding the two radios together.
+//
+// It deliberately no longer claims vendor correspondence. Archetypes are now real captured IE
+// structures (2026-08-26) and a capture cannot say which handset emitted a layout -- only that the
+// layout exists and how common it is. The old mapping looked vendor-faithful but was not: those
+// tails were modeled from documentation and a census of 877 real probing devices found none of
+// them on air, so "Samsung persona -> galaxy archetype" paired a real vendor id with a structure
+// no Samsung has ever emitted. A stable arbitrary assignment is more honest and equally coherent.
 probe_arch_t phantom_arch(phantom_family_t f) {
     switch (f) {
-        case PF_SAMSUNG: return ARCH_GALAXY;
-        case PF_GOOGLE:  return ARCH_PIXEL;
-        case PF_APPLE:   return ARCH_IPHONE;
-        default:         return ARCH_ANDROID;   // PF_GENERIC
+        case PF_SAMSUNG: return ARCH_R_EC15;
+        case PF_GOOGLE:  return ARCH_R_HE;
+        case PF_APPLE:   return ARCH_R_VS;
+        default:         return ARCH_R_HTONLY;   // PF_GENERIC
     }
 }
 
