@@ -581,14 +581,23 @@ static void test_eddystone(void)
     }
 }
 
+// INVERTED 2026-08-26. This used to REQUIRE a tracker template and assert it emitted service data
+// for 0xFEED. That is byte-for-byte the Tile signature this project seeds into its own detector
+// (sig_seed.c sig_id=3), so every decoy built from it was a guaranteed tracker match -- and nearby
+// phones running tracker detection would tell their owners an unknown Tile was travelling with
+// them. The requirement is now the opposite: no template may emit a seeded threat signature.
+// Detecting a tracker is the point; impersonating one never is.
 static void test_tracker(void)
 {
-    const device_template_t *t = find_family(FMT_SVC_TRACKER);
-    ST_CHECK(t != NULL, "tracker template present");
-    if (!t) return;
-    uint8_t pay[31], len = 0; uint16_t itvl = 0, cid = 0;
-    ST_CHECK(template_build(t, pay, &len, &itvl, &cid) == 0 && len > 0, "tracker builds");
-    ST_CHECK(payload_has_svc_uuid16(pay, len, 0xFEED), "tracker svc-data 0xFEED");
+    ST_CHECK(find_family(FMT_SVC_TRACKER) == NULL,
+             "no tracker template (emitting one alerts bystanders' phones)");
+    // Belt and braces: no template of ANY family may carry the Tile service UUID.
+    for (size_t i = 0; i < templates_count(); i++) {
+        const device_template_t *t = template_at(i);
+        uint8_t pay[31], len = 0; uint16_t itvl = 0, cid = 0;
+        if (template_build(t, pay, &len, &itvl, &cid) != 0 || len == 0) continue;
+        ST_CHECK(!payload_has_svc_uuid16(pay, len, 0xFEED), "no template emits Tile 0xFEED");
+    }
 }
 
 // A MAC produced by make_random_addr_mixed/make_random_addr is a valid BLE random
@@ -692,7 +701,13 @@ static void test_ble_next_addr_prebroadcast(void)
     // Find a non-static device whose rotation deadline falls BEFORE its death, so the address
     // change we observe is a rotation and not a rebirth. Both change addr; only rebirth resets
     // born_ms, which is the discriminator used below.
+    // Retry across fresh populations, not just across slots of one. ATYPE_STATIC_W is 75 and RPA is
+    // 5, so a single population often contains no rotating device whose rotation precedes its
+    // death, and the premise check below then fails for want of a sample rather than for a real
+    // regression. (It did exactly that on 2026-08-26: removing the persistent-role branch changed
+    // how much esp_random the spawn path consumes, reshuffling the draw.)
     int checked = 0;
+    for (int attempt = 0; attempt < 24 && checked < 3; attempt++) {
     for (int slot = 0; slot < ble_devices_count() && checked < 3; slot++) {
         const ble_device_t *cur = ble_devices_at(slot);
         if (!cur || !cur->alive || cur->atype == BLE_ATYPE_STATIC) continue;
@@ -717,6 +732,8 @@ static void test_ble_next_addr_prebroadcast(void)
             checked++;
         }
         ble_devices_init(CHURN_ST_N, 0);          // fresh population for the next slot examined
+    }
+        if (checked < 3) ble_devices_init(CHURN_ST_N, 0);   // next attempt: redraw the whole crowd
     }
     ST_CHECK(checked > 0, "at least one rotation was observed (test premise)");
 }
@@ -1230,14 +1247,21 @@ static void test_radar_wire(void)
     ST_CHECK(!radar_replay_ok(&rp, salt, 99),  "older counter rejected");
     ST_CHECK(radar_replay_ok(&rp, salt, 101),  "newer counter accepted");
 
-    // SEC-1: the telemetry gate treats an unfamiliar salt as "peer rebooted" and accepts. That is
-    // deliberate there, and exactly why CONTROL must not use it - pin the difference in a test.
+    // The telemetry gate still accepts an UNFAMILIAR salt (a peer really can reboot), but it no
+    // longer FORGETS the previous one. Alternating two captured sessions used to be accepted
+    // forever, which made a replayed REQUEST an active fleet-presence oracle: replay one captured
+    // frame, watch for the STATUS answer, learn a fleet is present. Fixed 2026-08-26 by keeping a
+    // high-water counter per salt.
     {
         uint8_t salt_b[RADAR_SALT_LEN] = { 0xDE,0xAD,0xBE,0xEF,0x05,0x06,0x07,0x08 };
         ST_CHECK(radar_replay_ok(&rp, salt_b, 1),
-                 "telemetry gate: new salt resets the counter (documented weakness)");
-        ST_CHECK(radar_replay_ok(&rp, salt, 1),
-                 "telemetry gate: alternating two captured sessions is accepted forever");
+                 "new salt accepted (a peer really can reboot)");
+        ST_CHECK(!radar_replay_ok(&rp, salt, 1),
+                 "alternating back to a KNOWN salt does not reopen its window");
+        ST_CHECK(!radar_replay_ok(&rp, salt_b, 1),
+                 "and the second session keeps its own high-water mark too");
+        ST_CHECK(radar_replay_ok(&rp, salt, 102),
+                 "a genuinely newer counter on a known salt is still accepted");
 
         uint64_t floor = 0;
         ST_CHECK(radar_replay_monotonic_ok(&floor, 100) && floor == 100, "control: first accepted");
@@ -1252,7 +1276,23 @@ static void test_radar_wire(void)
                  "control: reboot does not reopen the replay window");
     }
     uint8_t salt2[RADAR_SALT_LEN] = { 1,2,3,4,5,6,7,8 };
-    ST_CHECK(radar_replay_ok(&rp, salt2, 1),   "reboot (new salt) resets + accepts");
+    ST_CHECK(radar_replay_ok(&rp, salt2, 1),   "reboot (new salt) accepted");
+    // Eviction is bounded, not unbounded: cycling MORE distinct salts than the table holds does
+    // eventually free a slot, which is the residual cost of having to honour real reboots at all.
+    // Pinned so the bound is visible rather than assumed.
+    {
+        radar_replay_t ev = {0};
+        uint8_t s_i[RADAR_SALT_LEN] = {0};
+        for (int i = 0; i < RADAR_REPLAY_PEERS; i++) { s_i[0] = (uint8_t)(0x40 + i);
+            ST_CHECK(radar_replay_ok(&ev, s_i, 500), "fill: distinct salt accepted"); }
+        s_i[0] = 0x40;
+        ST_CHECK(!radar_replay_ok(&ev, s_i, 500), "still remembered while resident");
+        for (int i = 0; i < RADAR_REPLAY_PEERS; i++) { s_i[0] = (uint8_t)(0x80 + i);
+            radar_replay_ok(&ev, s_i, 500); }                       // evict every original entry
+        s_i[0] = 0x40;
+        ST_CHECK(radar_replay_ok(&ev, s_i, 500),
+                 "an attacker with more captured sessions than the table holds can still cycle");
+    }
 }
 
 static void test_espnow_convert(void)

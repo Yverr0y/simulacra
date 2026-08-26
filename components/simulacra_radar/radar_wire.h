@@ -49,7 +49,31 @@ typedef struct __attribute__((packed)) {
     uint8_t  preset;                                     // running preset: 0-5 sim_preset_t (5=TURBO), 6 CUSTOM, 0xFE MIXED, 0xFF none
 } radar_wire_status_t;
 
-typedef struct { uint8_t salt[RADAR_SALT_LEN]; uint64_t counter; bool seen; } radar_replay_t;
+// Replay state: a high-water counter PER SENDER SALT, not one global pair.
+//
+// A single (salt, counter) pair had to reset unconditionally on a salt change, because a peer that
+// reboots redraws its salt and its frames must still be accepted. That made replay defeatable
+// without any key: capture sealed frames from two different sender boots, then alternate them.
+// Each switch reset the state, so every frame was "new" again -- and a replayed REQUEST makes every
+// decoy in range answer with a STATUS. That is an active fleet-presence oracle: replay one captured
+// frame, watch for a reply, learn a fleet is here. For a project whose purpose is not being
+// detectable, answering an unauthenticated "are you there?" is the worst possible failure.
+//
+// Keeping a high-water mark per salt fixes it: a salt seen before keeps its counter, so alternating
+// between known salts is rejected. An attacker now needs captures from more than
+// RADAR_REPLAY_PEERS distinct sender boots to cycle entries out.
+//
+// Why not a single global monotonic floor, which would close this completely? Senders reserve
+// counter blocks in their own NVS, so two Vigils sit at unrelated counter values and a global floor
+// would make whichever is lower permanently unacceptable -- it would break multi-Vigil operation.
+// Per-salt state is what keeps several controllers workable.
+#ifndef RADAR_REPLAY_PEERS
+#define RADAR_REPLAY_PEERS 4
+#endif
+typedef struct {
+    struct { uint8_t salt[RADAR_SALT_LEN]; uint64_t counter; bool used; } peer[RADAR_REPLAY_PEERS];
+    uint8_t next;                       // round-robin victim when every slot is taken
+} radar_replay_t;
 
 // Build [nonce|ct|tag] into frame, where ct = E(type || len(2 LE) || payload || padding). The
 // plaintext is padded to a bucket (radar_pad.h) so frame length does not classify traffic. There is

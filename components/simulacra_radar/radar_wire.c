@@ -113,9 +113,20 @@ bool radar_replay_monotonic_ok(uint64_t *floor, uint64_t counter)
 
 bool radar_replay_ok(radar_replay_t *st, const uint8_t salt[RADAR_SALT_LEN], uint64_t counter)
 {
-    if (!st->seen || memcmp(st->salt, salt, RADAR_SALT_LEN) != 0) {   // fresh or peer rebooted
-        memcpy(st->salt, salt, RADAR_SALT_LEN); st->counter = counter; st->seen = true; return true;
+    // Known salt: accept only a strictly higher counter. This is what makes replay-by-alternating
+    // fail -- the old single-pair version forgot the previous salt entirely on every switch.
+    for (int i = 0; i < RADAR_REPLAY_PEERS; i++) {
+        if (!st->peer[i].used || memcmp(st->peer[i].salt, salt, RADAR_SALT_LEN) != 0) continue;
+        if (counter > st->peer[i].counter) { st->peer[i].counter = counter; return true; }
+        return false;
     }
-    if (counter > st->counter) { st->counter = counter; return true; }
-    return false;
+    // Unknown salt: a genuine peer reboot (or a second controller). Take a free slot, else evict
+    // round-robin so no single slot can be starved by a flood of forged salts.
+    int slot = -1;
+    for (int i = 0; i < RADAR_REPLAY_PEERS; i++) if (!st->peer[i].used) { slot = i; break; }
+    if (slot < 0) { slot = st->next; st->next = (uint8_t)((st->next + 1) % RADAR_REPLAY_PEERS); }
+    memcpy(st->peer[slot].salt, salt, RADAR_SALT_LEN);
+    st->peer[slot].counter = counter;
+    st->peer[slot].used = true;
+    return true;
 }

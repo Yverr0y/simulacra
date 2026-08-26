@@ -98,6 +98,8 @@ static bool cfg_floor_persist(void)
     return e == ESP_OK;               // are minutes apart, so flash wear is not a concern
 }
 #endif
+#define ESPNOW_ANSWER_MIN_MS 2000u   // floor between STATUS answers; Vigil polls every 3-5 s
+static uint32_t s_last_answer_ms;
 static bool s_answer;   // a REQUEST was seen this drain; answered once after it, so a burst of
                         // retransmits (the Vigil sends 3x) produces one reply, not three
 
@@ -555,7 +557,19 @@ static void espnow_task(void *arg)
             if (radar_retx_due(&s_status_retx, rnow, esp_random()))
                 esp_now_send(BCAST, s_status_retx.frame, s_status_retx.len);
         }
-        if (s_answer) { s_answer = false; respond_once(); }
+        // Minimum spacing between STATUS answers, independent of how many REQUESTs arrive.
+        // Defence in depth behind the per-salt replay table: even if an attacker cycled enough
+        // distinct captured salts to evict an entry, a replayed REQUEST can extract at most one
+        // answer per window rather than an unbounded stream. The Vigil polls every 3-5 s, so a 2 s
+        // floor never delays a legitimate request.
+        if (s_answer) {
+            s_answer = false;
+            uint32_t rn = (uint32_t)(esp_timer_get_time() / 1000);
+            if ((uint32_t)(rn - s_last_answer_ms) >= ESPNOW_ANSWER_MIN_MS || s_last_answer_ms == 0) {
+                s_last_answer_ms = rn;
+                respond_once();
+            }
+        }
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         if (now - last_offer > offer_period) {
             last_offer = now; offer_period = 25000 + esp_random() % 10001;
