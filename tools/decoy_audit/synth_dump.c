@@ -50,7 +50,12 @@ static void ad_types_onair(const uint8_t *ad, size_t len, char *out, size_t outs
     }
 }
 /* Read a model-seed file (produced by capture_profile.py) into an rf_model_t.
-   Format: "POP <f>", "V <cid_hex> <count> <b0..b6>", "OTHER <count> <b0..b6>". */
+   Format: "POP <f>", "V <cid_hex> <count> <b0..b6>", "OTHER <count> <b0..b6>",
+           "ADS <flags_only> <uuid16> <svcdata> <other>".
+   ADS carries the no-mfg AD-structure mix so the generator exercises its LEARNED path. Without it
+   every audit run would score generate.c's cold-start default -- a branch the firmware takes only
+   for its first few seconds in an unfamiliar room -- and the ad_structure number would describe
+   code that barely runs. */
 static int load_model_seed(const char *path, rf_model_t *m) {
     FILE *fp = fopen(path, "r");
     if (!fp) return 1;
@@ -58,6 +63,12 @@ static int load_model_seed(const char *path, rf_model_t *m) {
     while (fgets(line, sizeof line, fp)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         if (!strncmp(line, "POP", 3)) { sscanf(line + 3, "%f", &m->pop_ewma); continue; }
+        if (!strncmp(line, "ADS", 3)) {
+            unsigned a[RF_ADSTRUCT_BINS] = {0};
+            sscanf(line + 3, "%u %u %u %u", &a[0], &a[1], &a[2], &a[3]);
+            for (int i = 0; i < RF_ADSTRUCT_BINS; i++) m->adstruct_bins[i] = a[i];
+            continue;
+        }
         if (!strncmp(line, "OTHER", 5)) {
             uint32_t c, b[7] = {0};
             sscanf(line + 5, "%u %u %u %u %u %u %u %u", &c, &b[0],&b[1],&b[2],&b[3],&b[4],&b[5],&b[6]);

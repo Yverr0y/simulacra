@@ -241,6 +241,12 @@ static int observe_gap_event(struct ble_gap_event *event, void *arg)
 #if SIMULACRA_LEARN
     learn_offer(observe_hash_mac(d->addr.val), d->data, d->length_data, company, now);
 #endif
+    // AD-STRUCTURE, no-mfg only. An advert carrying mfg data gets its shape from that vendor's
+    // template, so folding it in here would blur the very mix pick_no_mfg_template() needs. This
+    // is the axis that was hardcoded to a single 2026-07-05 capture until 2026-08-26; feeding it
+    // from the live environment is what lets structure track the room like intervals already do.
+    if (!has_mfg)
+        rf_model_observe_adstruct(&s_model, rf_adstruct_bin(d->data, (uint8_t)d->length_data));
     observe_ingest(&s_model, d->addr.val, now, company, d->rssi, d->legacy_event_type);  // MAC dropped inside
     if (!s_window_mode) observe_maybe_close_sweep(now);      // window mode closes explicitly
     return 0;

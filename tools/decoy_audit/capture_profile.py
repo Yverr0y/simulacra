@@ -125,6 +125,23 @@ def build_profile(adverts):
     for addr,cos in dev_co.items():
         nz=[(c,cnt) for c,cnt in cos.items() if c]
         ven[str(max(nz,key=lambda x:x[1])[0]) if nz else "none"] += 1
+    # AD-STRUCTURE buckets over NO-MFG devices only, mirroring rf_adstruct_bin() in main/rf_model.c.
+    # This is what feeds the model seed so synth_dump exercises the LEARNED structure path rather
+    # than generate.c's cold-start default -- without it the audit would score a code path the
+    # firmware only uses for its first few seconds in an unknown room.
+    # Device-weighted and no-mfg-only for the same reasons the firmware applies: an advert carrying
+    # mfg data takes its shape from that vendor's template, not from this mix.
+    adstruct=[0,0,0,0]     # FLAGS_ONLY, UUID16, SVCDATA, OTHER
+    for addr,sigs in dev_ad.items():
+        nz=[(c,cnt) for c,cnt in dev_co[addr].items() if c]
+        if nz:
+            continue                                   # has mfg data -> not part of the no-mfg mix
+        sig=max(sigs.items(),key=lambda x:x[1])[0]
+        parts=[p for p in sig.split(",") if p]
+        if   "16" in parts:                    adstruct[2]+=1
+        elif "02" in parts or "03" in parts:   adstruct[1]+=1
+        elif parts==["01"]:                    adstruct[0]+=1
+        else:                                  adstruct[3]+=1
     # per-address median interval -> bin
     ibins=[0]*7
     for addr,t in ts.items():
@@ -150,6 +167,7 @@ def build_profile(adverts):
             "itvl_bins":[b/isum for b in ibins],
             "vendor":{k:v/vtot for k,v in ven.items()},
             "ad_sig":{k:v/adtot for k,v in ads.items()},
+            "adstruct":adstruct,
             "presence_ms_bins":pbins}
     rh = rssi_hist([a.get("rssi") for a in adverts])
     if rh:
@@ -172,6 +190,14 @@ def write_model_seed(profile, path):
         # the generator turns into service-data/beacon decoys (generate.c build_for_vendor).
         oc=int(round(none_share*1000))
         f.write("OTHER %d %s\n" % (oc, " ".join(str(int(none_share*b)) for b in binc)))
+        # AD structure, so synth_dump exercises the LEARNED path in generate.c rather than its
+        # cold-start default. Without this line the audit would score a branch the firmware only
+        # takes for its first few seconds in an unfamiliar room. Scaled to the same ~1000
+        # magnitude as the vendor counts so it clears RF_ADSTRUCT_MIN_OBS.
+        ads_b = profile.get("adstruct") or [0, 0, 0, 0]
+        tot_b = sum(ads_b)
+        if tot_b:
+            f.write("ADS %s\n" % " ".join(str(int(round(1000.0 * x / tot_b))) for x in ads_b))
 
 def main():
     adv=parse_adverts(sys.argv[1]); prof=build_profile(adv)

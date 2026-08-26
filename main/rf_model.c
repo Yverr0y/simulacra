@@ -23,6 +23,64 @@ size_t rf_itvl_bin(int32_t ms)
     return 6;
 }
 
+// Classify serialized AD bytes into a structural bucket. Walks the TLV rather than pattern-matching
+// so a malformed or truncated advert degrades to RF_ADS_OTHER instead of being mis-binned.
+uint8_t rf_adstruct_bin(const uint8_t *ad, uint8_t len)
+{
+    bool has_flags = false, has_uuid16 = false, has_svcdata = false, has_other = false;
+    for (uint8_t i = 0; i + 1 < len; ) {
+        uint8_t l = ad[i];
+        if (l == 0) break;                        // trailing zero padding ends the AD
+        if ((uint16_t)i + 1 + l > len) break;     // malformed: stop, classify what was valid
+        switch (ad[i + 1]) {
+            case 0x01: has_flags   = true; break;                 // Flags
+            case 0x02: case 0x03: has_uuid16  = true; break;      // 16-bit service uuid list
+            case 0x16: has_svcdata = true; break;                 // 16-bit service DATA
+            default:   has_other   = true; break;
+        }
+        i = (uint8_t)(i + 1 + l);
+    }
+    if (has_svcdata) return RF_ADS_SVCDATA;       // strongest signal: beacon/tracker shaped
+    if (has_uuid16)  return RF_ADS_UUID16;
+    if (has_flags && !has_other) return RF_ADS_FLAGS_ONLY;
+    return RF_ADS_OTHER;
+}
+
+void rf_model_observe_adstruct(rf_model_t *m, uint8_t bin)
+{
+    if (bin < RF_ADSTRUCT_BINS) m->adstruct_bins[bin]++;
+}
+
+// Weighted draw over the learned mix. `r` is caller-supplied randomness so this stays pure and
+// host-testable. Refuses to answer below a floor: a handful of observations would otherwise let
+// one early advert dictate the whole crowd's shape, which is the single-capture overfit again in
+// miniature. The caller keeps its cold-start default until the model has actually seen something.
+//
+// RF_ADS_OTHER is EXCLUDED from the draw. It counts name-only and empty advertisers, shapes the
+// generator has no template for and deliberately does not emit. Returning it would force the caller
+// to substitute something, and whatever it substituted would be emitted at OTHER's full observed
+// weight -- on the 2026-08-25 baseline that was 25% of the no-mfg mass being spent on a shape the
+// room contained none of. Redistributing that mass proportionally across the three EMITTABLE bins
+// is the honest approximation: it says "of the shapes we can actually make, here is the real mix".
+#define RF_ADSTRUCT_MIN_OBS 24
+bool rf_adstruct_sample(const rf_model_t *m, uint32_t r, uint8_t *out_bin)
+{
+    uint32_t all = 0;
+    for (size_t b = 0; b < RF_ADSTRUCT_BINS; b++) all += m->adstruct_bins[b];
+    if (all < RF_ADSTRUCT_MIN_OBS) return false;      // gate on TOTAL evidence, including OTHER
+
+    uint32_t tot = 0;                                  // but draw only over what we can emit
+    for (size_t b = 0; b < RF_ADS_OTHER; b++) tot += m->adstruct_bins[b];
+    if (tot == 0) return false;                        // only unrepresentable shapes seen: cold-start
+    uint32_t x = r % tot;
+    for (size_t b = 0; b < RF_ADS_OTHER; b++) {
+        if (x < m->adstruct_bins[b]) { *out_bin = (uint8_t)b; return true; }
+        x -= m->adstruct_bins[b];
+    }
+    *out_bin = RF_ADS_SVCDATA;
+    return true;
+}
+
 size_t rf_rssi_bin(int8_t rssi)
 {
     int idx = (rssi + 100) / 10;          // -100 -> 0, -20 -> 8
@@ -65,6 +123,11 @@ void rf_model_decay(rf_model_t *m)
     for (size_t b = 0; b < RF_ITVL_BINS; b++) m->other_itvl_bins[b] = decayed(m->other_itvl_bins[b]);
     for (size_t b = 0; b < RF_RSSI_BINS; b++) m->rssi_bins[b] = decayed(m->rssi_bins[b]);
     for (size_t b = 0; b < RF_PDU_BINS; b++)  m->pdu_bins[b]  = decayed(m->pdu_bins[b]);
+    // Structure ages on the same rolling window as everything else. It must: this histogram exists
+    // precisely because a FIXED structural mix does not survive a change of environment, so a mix
+    // that never aged out would just reproduce the original defect more slowly.
+    for (size_t b = 0; b < RF_ADSTRUCT_BINS; b++)
+        m->adstruct_bins[b] = decayed(m->adstruct_bins[b]);
 }
 
 void rf_model_observe(rf_model_t *m, uint16_t company_id, int8_t rssi,
@@ -127,6 +190,10 @@ void rf_model_dump(const rf_model_t *m)
              (unsigned)m->pdu_bins[3], (unsigned)m->pdu_bins[4]);
 }
 
+// The NVS pair is excluded from the host audit build (tools/decoy_audit links this file whole so
+// the audit exercises the REAL rf_adstruct_sample rather than a stand-in). There is no NVS on a
+// host, and roster_stub.c supplies the honest answer -- "no stored model" -- in their place.
+#ifndef SIMULACRA_HOST_NO_NVS
 int rf_model_save_nvs(const rf_model_t *m)
 {
     nvs_handle_t h;
@@ -174,3 +241,4 @@ int rf_model_load_nvs(rf_model_t *m)
     m->arrival_per_min = 0.0f;
     return 0;
 }
+#endif  /* SIMULACRA_HOST_NO_NVS */

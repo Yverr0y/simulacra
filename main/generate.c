@@ -54,17 +54,38 @@ static const device_template_t *first_of_family(fmt_family_t fam)
     return 0;
 }
 
-// Choose the AD structure for a no-mfg decoy, matched to real ambient BLE: mostly TERSE advertisers
-// (flags-only "01", flags+uuid16 "01,03") with a small service-data beacon share for tracker/beacon
-// persona. All are no-mfg on air, so this keeps the vendor histogram closed while closing the
-// AD-structure tell - the no-mfg mass used to be ~100% service-data ("01,03,16") against a
-// flags-heavy real crowd (~53% flags-only / ~21% flags+uuid). NULL only if no templates exist.
-static const device_template_t *pick_no_mfg_template(void)
+// Choose the AD structure for a no-mfg decoy.
+//
+// LEARNED as of 2026-08-26. This function used to hardcode ~62% flags-only / ~24% flags+uuid16,
+// fitted on 2026-07-13 to one capture in which flags-only advertisers were 52.7% of devices. That
+// closed ad_structure to 0.153 on that capture and left it at 0.27-0.93 on every other -- the
+// worst number on the scorecard, and the only generation axis rf_model could not express. Interval
+// and vendor stay closed everywhere precisely because they sample the model; structure now does
+// too, so it tracks whatever room the board is actually in.
+//
+// The hardcoded mix survives ONLY as the cold-start default, used until the model has seen
+// RF_ADSTRUCT_MIN_OBS no-mfg adverts. A fresh boot in an unknown room has to emit something, and
+// terse-majority is the better prior -- but it is now a starting guess that gets overwritten,
+// rather than a permanent constant fitted to one July afternoon.
+static const device_template_t *pick_no_mfg_template(const rf_model_t *m)
 {
-    uint32_t r = esp_random() % 100;
     const device_template_t *t = 0;
-    if      (r < 62) t = first_of_family(FMT_FLAGS_ONLY);   // terse-advertiser majority
-    else if (r < 86) t = first_of_family(FMT_SVC_UUID16);   // flags + service UUID
+    uint8_t bin;
+    if (m && rf_adstruct_sample(m, esp_random(), &bin)) {
+        switch (bin) {
+            case RF_ADS_FLAGS_ONLY: t = first_of_family(FMT_FLAGS_ONLY); break;
+            case RF_ADS_UUID16:     t = first_of_family(FMT_SVC_UUID16); break;
+            // RF_ADS_SVCDATA falls through to the beacon draw below. RF_ADS_OTHER never arrives:
+            // rf_adstruct_sample excludes it and redistributes its weight, because emitting a
+            // substitute at OTHER's full observed share spends real mass on a shape the room may
+            // not contain at all.
+            default: break;
+        }
+    } else {
+        uint32_t r = esp_random() % 100;                    // cold start only
+        if      (r < 62) t = first_of_family(FMT_FLAGS_ONLY);
+        else if (r < 86) t = first_of_family(FMT_SVC_UUID16);
+    }
     if (t) return t;
     // remaining share (and any fallback): a service-data beacon, weighted within the beacon families.
     uint32_t total = 0;
@@ -79,9 +100,6 @@ static const device_template_t *pick_no_mfg_template(void)
     return 0;
 }
 
-// Map a sampled company id -> a built payload + a representative archetype index (always valid).
-// 0x004C -> iBeacon; 0xFFFF (no-mfg) -> a beacon/tracker family; a templated company -> its template;
-// otherwise a generic vendor-mfg carrying that company id.
 // How many live decoys may share ONE learned shape, from how often that shape was actually seen.
 //
 // A learned skeleton is copied from a REAL nearby device: element order, lengths, and the fields
@@ -111,7 +129,11 @@ static uint8_t learn_clone_budget(const learned_template_t *lt)
 static uint8_t s_clone_used[LEARN_CAP];
 static void generate_reset_clone_budget(void) { memset(s_clone_used, 0, sizeof s_clone_used); }
 
-static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uint8_t *arch_idx)
+// Map a sampled company id -> a built payload + a representative archetype index (always valid).
+// 0x004C -> iBeacon; 0xFFFF (no-mfg) -> a beacon/tracker family; a templated company -> its
+// template; otherwise a generic vendor-mfg carrying that company id.
+static int build_for_vendor(const rf_model_t *m, uint16_t company, uint8_t out[31],
+                            uint8_t *len, uint8_t *arch_idx)
 {
     // Prefer a learned shape for this company when one exists (adds real-world variety).
     // archetype_idx offset scheme: >= templates_count() means learned[idx - templates_count()].
@@ -150,7 +172,7 @@ static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uin
     // an iBeacon broadcasts Apple 0x004C manufacturer data, so it belongs to the 0x004C vendor slot,
     // not the no-mfg mass. Keeping OTHER on service-data families makes it no-mfg on air, like real.
     if (company == RF_VENDOR_UNKNOWN) {
-        const device_template_t *t = pick_no_mfg_template();
+        const device_template_t *t = pick_no_mfg_template(m);
         if (t) {
             uint16_t itvl, cid;
             if (template_build(t, out, len, &itvl, &cid)==0){
@@ -191,7 +213,7 @@ static uint16_t diversify_fill(const rf_model_t *m, identity_t *id, uint16_t avo
     // service-data beacon families (eddystone/tile), varied within them. Otherwise (an
     // over-represented real vendor) diversify across the whole template library.
     bool no_mfg = (avoid == RF_VENDOR_UNKNOWN);
-    const device_template_t *t = no_mfg ? pick_no_mfg_template() : 0;
+    const device_template_t *t = no_mfg ? pick_no_mfg_template(m) : 0;
     if (!t) {                       // real over-represented vendor, or no service-data template exists
         t = templates_pick();
         for (int a = 0; a < 8 && t->company_id == avoid; a++) t = templates_pick();
@@ -246,7 +268,7 @@ size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
             company = diversify_fill(m, id, company);   // sets payload/len/itvl/archetype
         } else {
             uint8_t arch=0;
-            if (build_for_vendor(company, id->payload, &id->payload_len, &arch)!=0){ id->payload_len=0; }
+            if (build_for_vendor(m, company, id->payload, &id->payload_len, &arch)!=0){ id->payload_len=0; }
             id->archetype_idx = arch;
             // Interval from the model: this vendor's histogram for a real slot, else the ambient
             // no-mfg (OTHER) histogram. Only fall back to a generic 100-300ms when neither has data.
