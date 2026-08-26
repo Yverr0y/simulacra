@@ -763,11 +763,62 @@ static void fleet_modal_touch(int px, int py, uint32_t now){
 }
 #endif
 
+// What peers have already been told, so a sweep can send only MATERIAL changes.
+//
+// The receive path (esp_now_link.c) unpacks a chunk and calls learn_ingest_wire per record, with no
+// reassembly: chunk_index/chunk_count are informational and learn_merge_wire is idempotent, so
+// every record stands alone and a partial set is safe to send. Material change is exactly what
+// learn_merge_wire acts on -- a new shape_hash, a raised reinforce_count, or a widened interval
+// band -- so those four fields are the fingerprint. Anything else re-sends a record the receiver
+// discards as a no-op duplicate.
+typedef struct { uint32_t hash; uint16_t rc, imin, imax; } sync_fp_t;
+static sync_fp_t s_sync_fp[LEARN_SYNC_TOP_N];
+static size_t    s_sync_fp_n;
+static uint8_t   s_sync_since_full;
+#define SYNC_FULL_EVERY 6      // full resync every Nth sweep, repairing anything a peer missed
+
+static bool sync_fp_changed(const learned_template_t *t)
+{
+    for (size_t i = 0; i < s_sync_fp_n; i++) {
+        if (s_sync_fp[i].hash != t->shape_hash) continue;
+        return s_sync_fp[i].rc   != t->reinforce_count ||
+               s_sync_fp[i].imin != t->itvl_min_ms ||
+               s_sync_fp[i].imax != t->itvl_max_ms;
+    }
+    return true;                                    // unseen shape
+}
+
 static void broadcast_library(void){
     if (s_lib_count == 0) return;
     s_lib_sweep++;
     static learned_template_t sel[LEARN_SYNC_TOP_N];
     size_t n = learn_top_n(s_lib, s_lib_count, sel, LEARN_SYNC_TOP_N);
+
+    // MEASURED 2026-08-26: re-sending the whole top-64 every sweep was 98% of ALL ESP-NOW traffic
+    // on air (65.9 frames/min, 22 back-to-back chunks). A learned library changes slowly, so nearly
+    // every one of those records was a no-op duplicate the receiver threw away.
+    bool full = (s_sync_fp_n == 0) || (++s_sync_since_full >= SYNC_FULL_EVERY);
+    static bool send_it[LEARN_SYNC_TOP_N];
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++) {
+        send_it[i] = full || sync_fp_changed(&sel[i]);
+        if (send_it[i]) m++;
+    }
+    // Refresh fingerprints from the FULL top-N before compacting sel, so a record that drops out of
+    // the top-N is forgotten and gets re-sent if it comes back.
+    for (size_t i = 0; i < n; i++) {
+        s_sync_fp[i].hash = sel[i].shape_hash;
+        s_sync_fp[i].rc   = sel[i].reinforce_count;
+        s_sync_fp[i].imin = sel[i].itvl_min_ms;
+        s_sync_fp[i].imax = sel[i].itvl_max_ms;
+    }
+    s_sync_fp_n = n;
+    if (full) s_sync_since_full = 0;
+    if (m == 0) { ESP_LOGW(TAG, "lib sync: nothing changed (%u recs held)", (unsigned)n); return; }
+    for (size_t i = 0, w = 0; i < n; i++)            // compact in place
+        if (send_it[i]) { if (w != i) sel[w] = sel[i]; w++; }
+    n = m;
+
     uint8_t chunks = (uint8_t)((n + LEARN_WIRE_RECS_PER_CHUNK - 1) / LEARN_WIRE_RECS_PER_CHUNK);
     for (uint8_t ci = 0; ci < chunks; ci++) {
         size_t off = (size_t)ci * LEARN_WIRE_RECS_PER_CHUNK;
@@ -785,7 +836,8 @@ static void broadcast_library(void){
         vTaskDelay(pdMS_TO_TICKS(20 + (esp_random() % 61)));
     }
     s_last_sync_ms = (uint32_t)(esp_timer_get_time()/1000);
-    ESP_LOGW(TAG, "broadcast top-%u of %u recs", (unsigned)n, (unsigned)s_lib_count);
+    ESP_LOGW(TAG, "lib sync: sent %u recs in %u chunks (%s) of %u held",
+             (unsigned)n, (unsigned)chunks, full ? "FULL" : "delta", (unsigned)s_lib_count);
 }
 static uint32_t age_s(uint32_t now, uint32_t ts){ return ts ? (uint32_t)(now - ts)/1000u : UINT32_MAX; }
 static void net_init(void){
@@ -1173,10 +1225,14 @@ void app_main(void)
         // tell the 2026-08-25 opsec pass jittered everywhere else and missed here. And 20 s is
         // absurdly frequent for a slowly-learned template library: nothing meaningful changes in
         // that window, so it was re-sending the same top-N over and over.
-        static uint32_t last_sync = 0, sync_period = 240000;
+        // With broadcast_library() now sending only material changes, a sweep that finds nothing
+        // new costs ZERO frames, so frequency is nearly free and the period can stay responsive.
+        // The cost is now carried entirely by the periodic FULL resync (SYNC_FULL_EVERY sweeps),
+        // which lands roughly every 12-18 min.
+        static uint32_t last_sync = 0, sync_period = 120000;
         if (now - last_sync > sync_period) {
             last_sync = now;
-            sync_period = 240000 + (esp_random() % 120001);   // 4-6 min, re-drawn every fire
+            sync_period = 120000 + (esp_random() % 60001);    // 2-3 min, re-drawn every fire
             broadcast_library();
         }
         static uint32_t last_sig = 0, sig_period = 300000;
