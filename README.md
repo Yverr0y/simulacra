@@ -154,7 +154,10 @@ the lower-power/everyday-carry variant.
 ## Hardware
 
 - **ESP32-C5** (Ward) - the suggested/primary decoy board. Dual-band Wi-Fi 6, and it takes and
-  charges its own LiPo battery.
+  charges its own LiPo battery. Developed and tested against the **Waveshare ESP32-C5-WIFI6-KIT**,
+  which is the board the battery wiring and pin choices assume. Other ESP32-C5 boards run the same
+  firmware, but battery sensing is board-specific - the Waveshare kit has no fuel gauge, so it uses
+  an ADC divider on GPIO6 rather than the I2C gauge some boards carry.
 - **ESP32-C6** (Shade) - fully supported alternative decoy, leaner and lower-power for
   everyday-carry.
 - **ESP32** "Cheap Yellow Display" (ILI9341 + XPT2046 touch + microSD) for Vigil.

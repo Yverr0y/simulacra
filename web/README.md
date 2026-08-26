@@ -6,10 +6,15 @@ and the correct role is installed:
 
 | Board | Chip | Role |
 |---|---|---|
-| ESP32-C5 dev board (e.g. ESP32-C5-DevKitC-1) | ESP32-C5 | Ward decoy |
+| Waveshare ESP32-C5-WIFI6-KIT - **suggested** | ESP32-C5 | Ward decoy |
 | SparkFun Thing Plus ESP32-C6 | ESP32-C6 | Shade decoy |
 | CYD - ESP32-2432S028 (2.8" ESP32 display) | ESP32 (classic) | Vigil controller |
 
+**The Waveshare ESP32-C5-WIFI6-KIT is the suggested decoy board** - dual-band, and it takes and
+charges its own battery. That is the specific board the project is developed and tested on; any
+ESP32-C5 runs the same firmware, but battery sensing is board-specific, so a different C5 may need
+its own wiring. ESP32-C6 remains fully supported for anyone who wants the lower-power/
+everyday-carry variant.
 A minimal fleet is **one decoy + one CYD**. Flash each board in turn.
 
 ## Regime
