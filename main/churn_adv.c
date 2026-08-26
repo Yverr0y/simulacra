@@ -35,7 +35,10 @@ int churn_adv_apply(uint8_t instance, const identity_t *id)
     p.sid           = instance;
     p.itvl_min      = ADV_ITVL_UNITS(id->adv_itvl_ms);
     p.itvl_max      = ADV_ITVL_UNITS(id->adv_itvl_ms + 30);
-    p.tx_power      = (id->tx_power != 0) ? id->tx_power : 127;   // per-identity dither; 0 -> max/default
+    // 127 is NimBLE's "no preference". Guarded on the dedicated sentinel, NOT on 0 -- 0 dBm is an
+    // ordinary power level, and treating it as "use maximum" put a sixth of the crowd plus every
+    // persona at full output. See IDENTITY_TX_DEFAULT in identity.h.
+    p.tx_power      = (id->tx_power != IDENTITY_TX_DEFAULT) ? id->tx_power : 127;
     rc = ble_gap_ext_adv_configure(instance, &p, NULL, NULL, NULL);
     if (rc) { ESP_LOGW(TAG, "configure inst %u rc=%d", instance, rc); return rc; }
 

@@ -198,10 +198,53 @@ static int build_for_vendor(const rf_model_t *m, uint16_t company, uint8_t out[3
     return 1;
 }
 
-static int8_t dither_tx(void)   // plausible TX spread; not all at max
+// Per-identity TX power, shaped to the ambient RSSI SPREAD the model has actually observed.
+//
+// The old ladder spanned 15 dB ({-12,-9,-6,-3,0,3}), worth sd 5.12, and contained 0 -- which
+// churn_adv read as "controller default", i.e. maximum. Measured against three independent
+// decoy-free captures whose across-device RSSI sd is a stable 12.3-14.6, the decoy population came
+// out at 9.90: identities clustering ~25-30% tighter than a real crowd. That is the "one emitter
+// wearing many costumes" tell, and the bench flattered it -- roughly 8.5 dB of the 9.90 came from
+// the three boards being physically apart WITH the sniffer among them. To an observer at realistic
+// distance those boards collapse toward a single point and only this function's spread remains.
+//
+// So the spread is drawn from rf_model's rssi_bins, exactly as interval, vendor and AD structure
+// are drawn from their histograms. What that reproduces is the SHAPE of ambient's RSSI spread, not
+// its absolute level: every decoy shares one physical location, so an observer's distance shifts
+// the whole population together and no tx setting can fake being far away. Shape is the part that
+// is ours to control, and it is what the audit scores (median-anchored, placement-invariant).
+#define TX_MIN_DBM  (-27)      // within ESP32 BLE range; still audible well past typical rooms
+#define TX_MAX_DBM  (3)
+#define TX_BASE_DBM (-12)      // population centre; low enough that body-worn decoys do not all
+                               // read as "right next to the observer"
+static int8_t dither_tx(const rf_model_t *m)
 {
-    static const int8_t lv[] = { -12, -9, -6, -3, 0, 3 };   // 0 -> controller default in churn_adv
-    return lv[esp_random() % (sizeof(lv)/sizeof(lv[0]))];
+    int base = TX_BASE_DBM;
+    if (m) {
+        uint32_t tot = 0;
+        for (size_t b = 0; b < RF_RSSI_BINS; b++) tot += m->rssi_bins[b];
+        if (tot >= 32) {                       // enough evidence to have a shape at all
+            // Weighted median bin, then draw a bin and take the offset between them. Bins are
+            // 10 dB wide, so add a sub-bin jitter or the population lands on a 10 dB comb that is
+            // itself a signature.
+            uint32_t half = tot / 2, run = 0; size_t med = 0;
+            for (size_t b = 0; b < RF_RSSI_BINS; b++) {
+                run += m->rssi_bins[b];
+                if (run >= half) { med = b; break; }
+            }
+            int pick = weighted_pick(m->rssi_bins, RF_RSSI_BINS);
+            if (pick >= 0) {
+                base += ((int)pick - (int)med) * 10 + (int)(esp_random() % 10u) - 5;
+            }
+        }
+    } else {
+        base += (int)(esp_random() % 31u) - 15;   // cold start: widened uniform, ~30 dB
+    }
+    if (base < TX_MIN_DBM) base = TX_MIN_DBM;
+    if (base > TX_MAX_DBM) base = TX_MAX_DBM;
+    // Never hand back the sentinel: it would mean "controller default" and put this identity at
+    // maximum output, which is the collision this whole change exists to remove.
+    return (int8_t)(base == IDENTITY_TX_DEFAULT ? TX_MIN_DBM : base);
 }
 
 // Draw a diverse built-in template into an identity, avoiding `avoid` (the over-represented company
@@ -278,7 +321,7 @@ size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
             id->adv_itvl_ms = itvl ? itvl : (uint16_t)(100 + (esp_random()%200));
         }
         id->company_id = company;
-        id->tx_power = dither_tx();
+        id->tx_power = dither_tx(m);
         // MFG-BEARING structure, from the learned mix. enc_vendor_mfg emits one shape ("01,ff")
         // whose real share measured 100.0% / 50.0% / 15.6% / 0.0% across four decoy-free captures
         // -- the same collapse that made the hardcoded no-mfg mix a single-capture overfit, so it

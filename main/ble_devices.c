@@ -270,7 +270,13 @@ int ble_device_sync(int slot, int persona_idx, bool apple,
     // A phone presents on BLE as a terse phone shape (flags-only / svc-uuid16), never accessory
     // manufacturer data. Build it directly (no roster draw); company id stays 0.
     d->id.company_id    = 0;
-    d->id.tx_power      = 0;
+    // A dithered level, NOT 0. Under the old sentinel 0 meant "controller default", so every
+    // persona advertised at maximum output -- and personas are roughly a third of the crowd. That
+    // pinned a large, coherent slice of the population to the loud end of the RSSI distribution,
+    // which is the opposite of the spread real phones show. Phones are ordinary radios; give them
+    // an ordinary spread. Kept local rather than routed through generate.c's model-driven
+    // dither_tx() because ble_device_sync has no model handle, and a plain band is honest here.
+    d->id.tx_power      = (int8_t)(-18 + (int)(esp_random() % 19u));   // -18..0 dBm
     d->id.archetype_idx = 0;
     if (template_build_phone(apple, d->id.payload, &d->id.payload_len, &d->id.adv_itvl_ms) != 0)
         d->id.payload_len = 0;                          // serialization guard (self-test catches)

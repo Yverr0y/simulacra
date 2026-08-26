@@ -216,6 +216,19 @@ def write_model_seed(profile, path):
         tot_m = sum(mfg_b)
         if tot_m:
             f.write("MFGS %s\n" % " ".join(str(int(round(1000.0 * x / tot_m))) for x in mfg_b))
+        # Ambient RSSI shape, so dither_tx() exercises its LEARNED spread instead of the cold-start
+        # uniform. Re-binned from this profile's 14 x 5 dB (-100..-30) to the firmware's
+        # RF_RSSI_BINS 8 x 10 dB (-100..-20): firmware bin b is profile bins 2b and 2b+1, and the
+        # top firmware bin (-30..-20) has no profile counterpart, so it stays 0.
+        rb = profile.get("rssi_bins")
+        if rb:
+            fw = [0.0] * 8
+            for i, v in enumerate(rb):
+                b = i // 2
+                if b < 7:
+                    fw[b] += v
+            s = sum(fw) or 1.0
+            f.write("RSSI %s\n" % " ".join(str(int(round(1000.0 * x / s))) for x in fw))
 
 def main():
     adv=parse_adverts(sys.argv[1]); prof=build_profile(adv)
