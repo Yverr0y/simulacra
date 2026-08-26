@@ -18,19 +18,8 @@
 #define TRANSIENT_MAX_MS   720000u    // 12 min
 #define RESIDENT_MIN_MS   1800000u    // 30 min
 #define RESIDENT_MAX_MS   5400000u    // 90 min
-// HARD CEILING on how long any single address may stay on air, whatever its role or subtype.
-//
-// This is the project's core invariant, and until 2026-08-26 nothing enforced it. Rotation bounded
-// RPA and NRPA, but STATIC never rotates (next_rotate_ms = 0), so a static device's address was on
-// air for its entire life: up to 90 min on the resident band and 4-12 h on the since-removed
-// persistent band. With ATYPE_STATIC_W at 75, that was three quarters of the crowd. Measured on the
-// 2026-08-25 capture, static addresses reached 57.5 min on air inside a 60 min window while RPA
-// peaked at 19.3 min - and the capture was too short to see the persistent tail at all.
-//
-// 15 min matches real phone RPA rotation, so no decoy identity outlives the thing it is covering.
-// STATIC honours it by dying and being reborn as a NEW device rather than by rotating: an address
-// whose top two bits declare "I am static" must not rotate, or it contradicts itself on air.
-#define ADDR_MAX_ONAIR_MS  900000u    // 15 min
+// ADDR_MAX_ONAIR_MS lives in ble_devices.h: probe_agents.c pins its Wi-Fi MAC rotation to the same
+// ceiling, because "no persistent identifiers" has to hold across BOTH radios.
 // Rotation cadence per subtype (independent phase + wide jitter). STATIC never rotates.
 // RPA_ROT_MAX is held at the ceiling: a 20 min rotation would have outlived it.
 #define RPA_ROT_MIN_MS     600000u    // 10 min

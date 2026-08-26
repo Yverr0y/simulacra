@@ -7,6 +7,21 @@
 // clamped to this. Perceived density comes from turnover, not from raising this ceiling.
 #define BLE_DEVICES_MAX 32
 
+// HARD CEILING on how long any single address may stay on air, whatever its role, subtype, or
+// RADIO. Shared with probe_agents.c so the Wi-Fi side cannot drift away from it.
+//
+// This is the project's core invariant, and until 2026-08-26 nothing enforced it. Rotation bounded
+// RPA and NRPA, but STATIC never rotates (next_rotate_ms = 0), so a static device's address was on
+// air for its entire life: up to 90 min on the resident band and 4-12 h on the since-removed
+// persistent band. With ATYPE_STATIC_W at 75, that was three quarters of the crowd. Measured on the
+// 2026-08-25 capture, static addresses reached 57.5 min on air inside a 60 min window while RPA
+// peaked at 19.3 min -- and the capture was too short to see the persistent tail at all.
+//
+// 15 min matches real phone RPA rotation, so no decoy identity outlives the thing it is covering.
+// STATIC honours it by dying and being reborn as a NEW device rather than by rotating: an address
+// whose top two bits declare "I am static" must not rotate, or it contradicts itself on air.
+#define ADDR_MAX_ONAIR_MS  900000u    // 15 min
+
 typedef enum { BLE_ATYPE_STATIC, BLE_ATYPE_RPA, BLE_ATYPE_NRPA } ble_atype_t;
 // Lifetime bands. There is deliberately NO persistent/"infrastructure" role.
 //

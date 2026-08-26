@@ -461,7 +461,7 @@ static void broadcast_sig_db(void)
         if (radar_wire_seal(frame, &flen, RADAR_TYPE_SIG_SYNC, pl, plen,
                             tx_key(), s_salt, ctr) == 0)
             esp_now_send(BCAST, frame, flen);
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(20 + (esp_random() % 61)));   // jittered, as broadcast_library
     }
     ESP_LOGW(TAG, "sig: broadcast v%u (%u sigs, %u chunks)",
              (unsigned)s_sigdb_ver, (unsigned)s_sigdb_n, (unsigned)chunks);

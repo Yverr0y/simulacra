@@ -36,7 +36,7 @@ class NoPersistentIdentifiers(unittest.TestCase):
 
     def test_static_life_is_capped_to_the_onair_ceiling(self):
         c = src("ble_devices.c")
-        self.assertIn("ADDR_MAX_ONAIR_MS", c, "the on-air ceiling is gone")
+        self.assertIn("ADDR_MAX_ONAIR_MS", c + src("ble_devices.h"), "the on-air ceiling is gone")
         # STATIC never rotates, so its address is on air for its entire life. The cap must be
         # applied to static lifetimes or the ceiling is decorative.
         self.assertRegex(
@@ -45,8 +45,19 @@ class NoPersistentIdentifiers(unittest.TestCase):
             "(next_rotate_ms = 0), so an unclamped static life puts one address on air for its "
             "whole duration.")
 
+    def test_wifi_rotation_is_pinned_to_the_same_ceiling(self):
+        """The ceiling must hold across BOTH radios, by construction not coincidence.
+
+        probe_agents.c had its own literal 900000 that happened to match. Nothing tied them
+        together, so changing ADDR_MAX_ONAIR_MS would have left Wi-Fi identities outliving BLE ones
+        while every BLE test still passed.
+        """
+        self.assertRegex(
+            src("probe_agents.c"), r"#define\s+PERSONA_MAC_ROT_MAX_MS\s+ADDR_MAX_ONAIR_MS",
+            "Wi-Fi agent MAC rotation must be pinned to ADDR_MAX_ONAIR_MS, not a repeated literal")
+
     def test_ceiling_is_at_most_phone_rpa_rotation(self):
-        cap = define("ble_devices.c", "ADDR_MAX_ONAIR_MS")
+        cap = define("ble_devices.h", "ADDR_MAX_ONAIR_MS")
         self.assertLessEqual(cap, 900000,
                              f"ADDR_MAX_ONAIR_MS ({cap} ms) exceeds 15 min. Real phones rotate "
                              "their RPA at ~15 min; a decoy identity must not outlive that.")
@@ -54,7 +65,7 @@ class NoPersistentIdentifiers(unittest.TestCase):
     def test_rotation_bands_respect_the_ceiling(self):
         """Rotating subtypes are bounded by cadence, so every cadence must sit under the cap."""
         c = src("ble_devices.c")
-        cap = define("ble_devices.c", "ADDR_MAX_ONAIR_MS")
+        cap = define("ble_devices.h", "ADDR_MAX_ONAIR_MS")
         for name in ("NRPA_ROT_MAX_MS", "PERSONA_RPA_ROT_MAX_MS"):
             m = re.search(rf"^#define\s+{name}\s+(\d+)", c, re.M)
             if m:

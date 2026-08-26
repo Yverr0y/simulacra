@@ -126,7 +126,10 @@ int probe_build_request(const uint8_t mac[6], uint8_t ch, probe_arch_t arch, boo
     if (!a) return 1;
     const uint8_t *tail = band5 ? a->tail5 : a->tail24;
     uint16_t tlen       = band5 ? a->tail5_len : a->tail24_len;
-    if (!tail || tlen == 0) return 2;                 // archetype lacks this band
+    // tlen < 2, not tlen == 0: the memcpy below copies (tlen - 2) bytes, and at tlen == 1 that
+    // expression is -1 promoted to a huge size_t. Not reachable today (every archetype tail opens
+    // with a 2-byte placeholder SSID element) but the guard should not depend on that invariant.
+    if (!tail || tlen < 2) return 2;                   // archetype lacks this band
     if (ssid == 0) ssid_len = 0;                      // NULL -> wildcard
     if (ssid_len > 32) return 4;                      // 802.11 SSID element max
     // body = SSID element (2 + ssid_len) + the archetype tail AFTER its placeholder SSID (tlen - 2)

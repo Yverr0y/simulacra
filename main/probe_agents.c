@@ -1,6 +1,7 @@
 #include "probe_agents.h"
 #include "esp_random.h"
 #include "ssid_pool.h"
+#include "ble_devices.h"        // ADDR_MAX_ONAIR_MS: one ceiling, both radios
 #include <string.h>
 
 #define LIFE_MIN_MS    60000u    // 1 min
@@ -10,7 +11,10 @@
 #define IDLE_MIN_MS    30000u
 #define IDLE_MAX_MS    180000u
 #define PERSONA_MAC_ROT_MIN_MS 480000u   // 8 min  (Wi-Fi MAC intra-life rotation, fast-realistic)
-#define PERSONA_MAC_ROT_MAX_MS 900000u   // 15 min
+// Pinned to the shared ceiling rather than repeating 900000. Until 2026-08-26 these two agreed only
+// by coincidence -- nothing tied them together, so changing ADDR_MAX_ONAIR_MS would have silently
+// left Wi-Fi identities outliving BLE ones.
+#define PERSONA_MAC_ROT_MAX_MS ADDR_MAX_ONAIR_MS   // 15 min
 // TURBO MAC rotation band -- placeholder pending the on-hardware tuning pass
 // (docs/superpowers/specs/2026-08-12-turbo-flood-mode-design.md, Open question).
 #define TURBO_MAC_ROT_MIN_MS 3000u    // 3 s
