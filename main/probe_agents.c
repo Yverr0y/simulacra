@@ -19,8 +19,26 @@
 // (docs/superpowers/specs/2026-08-12-turbo-flood-mode-design.md, Open question).
 #define TURBO_MAC_ROT_MIN_MS 3000u    // 3 s
 #define TURBO_MAC_ROT_MAX_MS 8000u    // 8 s
-#define SSID_ASSIGN_PCT      62   // % of personas that get a named-SSID set (rest wildcard for life)
-#define SSID_BURST_NAMED_PCT 60   // for an assigned persona, % of bursts that name a network (on-air realism)
+// Named-probe behaviour, recalibrated 2026-08-26 against a decoy-free capture (877 probing
+// devices, 2229 probe requests). The shipped numbers had the shape inverted: too many personas
+// naming, each naming too rarely, and each carrying too many saved networks.
+//
+//   measured                                   was       now
+//   devices that EVER name a network   21.2%    62%       21
+//   a namer's probes that are directed 78.4%    60%       78
+//   distinct names per naming device    1.05    ~2        ~1.05 (see assign_ssids)
+//
+// Real devices split sharply into "never names" and "names almost every time", and a namer
+// typically has exactly ONE network it is looking for. Modelling the middle of that distribution
+// -- most personas naming sometimes -- produces a shape no real crowd has.
+//
+// KNOWN RESIDUAL: aggregate directed share lands ~16.5% against a measured 27.1%, because real
+// naming devices are also about 2x chattier overall (4.14 probes each vs 2.11 for non-namers).
+// That is a burst-frequency knob, not an SSID knob, and is left alone rather than fudged by
+// inflating one of the three parameters above away from its measured value.
+#define SSID_ASSIGN_PCT      21   // % of personas that get a named-SSID set (rest wildcard for life)
+#define SSID_BURST_NAMED_PCT 78   // for an assigned persona, % of bursts that name a network
+#define SSID_SECOND_NET_PCT   5   // % of naming personas holding a SECOND network (mean 1.05)
 #define GLIDE_STEP    1        // move the applied population one agent at a time (device-faithful)
 #define GLIDE_MIN_MS  30000u   // per-node jittered step interval: lower bound (~30 s)
 #define GLIDE_MAX_MS  60000u   // upper bound (~60 s); each step re-draws independently via esp_random
@@ -64,7 +82,11 @@ static void assign_ssids(probe_agent_t *a)
 {
     a->ssid_n = 0;
     if ((esp_random() % 100u) >= SSID_ASSIGN_PCT) return;         // wildcard-only persona
-    int want = 1 + (int)(esp_random() % (uint32_t)AGENT_SSID_MAX);
+    // Measured mean is 1.05 distinct networks per naming device, so ONE is the overwhelming case
+    // and a second is rare. `1 + rand % AGENT_SSID_MAX` gave a flat 1..3 (mean 2), which is not a
+    // saved-network set any real phone advertises.
+    int want = 1 + ((esp_random() % 100u) < SSID_SECOND_NET_PCT ? 1 : 0);
+    if (want > AGENT_SSID_MAX) want = AGENT_SSID_MAX;
     for (int tries = 0; tries < 16 && a->ssid_n < want; tries++) {
         int idx = ssid_pool_pick_weighted();
         int dup = 0;
