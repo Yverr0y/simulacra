@@ -95,6 +95,16 @@ bool   rf_adstruct_sample(const rf_model_t *m, uint32_t r, uint8_t *out_bin);
 void   rf_model_observe_mfgstruct(rf_model_t *m, uint8_t bin);
 uint8_t rf_mfgstruct_bin(const uint8_t *ad, uint8_t len);
 bool   rf_mfgstruct_sample(const rf_model_t *m, uint32_t r, uint8_t *out_bin);
+
+// Per-identity TX power (dBm), shaped to the ambient RSSI spread the model has observed.
+//
+// Lives here rather than in generate.c because BOTH populations need it and they are built by
+// different code paths: the unbound crowd through generate_roster, and bound personas through
+// ble_device_sync. Giving personas their own fixed band left the two halves of one on-air crowd
+// drawing from different distributions, which widened the combined spread past ambient's -- worse
+// than either alone. `r` is caller-supplied randomness so this stays pure and host-testable.
+// `m` may be NULL: callers without a model get a plausible cold-start spread.
+int8_t rf_tx_sample(const rf_model_t *m, uint32_t r);
 // Fold a completed sweep's distinct-device aggregates (EWMA).
 void   rf_model_end_sweep(rf_model_t *m, uint32_t distinct_devices, uint32_t window_ms,
                           uint32_t arrivals);

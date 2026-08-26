@@ -160,6 +160,10 @@ static void simulacra_task(void *arg)
     // holding 4-9 real devices. Room-matching has to be allowed to shrink the crowd.
     if (ndev < (int)sim_settings_floor()) ndev = sim_settings_floor();
     ble_devices_init(ndev, (uint32_t)(esp_timer_get_time() / 1000));  // population size; clamped to max
+    // Bound personas draw TX power from the SAME learned shape the unbound crowd uses. Giving the
+    // two halves of one on-air crowd separate distributions widened the combined spread past
+    // ambient's and scored worse than either half alone.
+    ble_devices_set_model(observe_model());
     // Create the persona registry HERE, on simulacra_task, BEFORE coexist_start spawns coexist_task
     // (task creation is a memory barrier). All phantom_lifecycle/sync_* thereafter run only on the
     // coexist tick, so the phantom state has a single writer -> no lock needed. Binding is deferred

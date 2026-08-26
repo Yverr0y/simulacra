@@ -1,4 +1,5 @@
 #include "ble_devices.h"
+#include "rf_model.h"
 #include "roster.h"
 #include "templates.h"
 #include "esp_random.h"
@@ -47,6 +48,8 @@ static float        s_accel_applied = 1.0f;
 #define TURBO_LIFE_MAX_MS 5000u   // 5 s
 
 static bool s_turbo = false;
+static const rf_model_t *s_tx_model;   // for persona TX draws; see ble_devices_set_model
+void ble_devices_set_model(const rf_model_t *m) { s_tx_model = m; }
 
 static uint32_t rnd_range(uint32_t lo, uint32_t hi) { return lo + (esp_random() % (hi - lo + 1u)); }
 
@@ -276,7 +279,7 @@ int ble_device_sync(int slot, int persona_idx, bool apple,
     // which is the opposite of the spread real phones show. Phones are ordinary radios; give them
     // an ordinary spread. Kept local rather than routed through generate.c's model-driven
     // dither_tx() because ble_device_sync has no model handle, and a plain band is honest here.
-    d->id.tx_power      = (int8_t)(-18 + (int)(esp_random() % 19u));   // -18..0 dBm
+    d->id.tx_power      = rf_tx_sample(s_tx_model, esp_random());
     d->id.archetype_idx = 0;
     if (template_build_phone(apple, d->id.payload, &d->id.payload_len, &d->id.adv_itvl_ms) != 0)
         d->id.payload_len = 0;                          // serialization guard (self-test catches)

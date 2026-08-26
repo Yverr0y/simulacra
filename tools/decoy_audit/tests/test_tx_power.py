@@ -44,13 +44,14 @@ class TxPowerSentinelDoesNotCollideWithZeroDbm(unittest.TestCase):
             sync, r"d->id\.tx_power\s*=\s*0\s*;",
             "every persona is back to the sentinel, i.e. maximum output. Personas are ~1/3 of the "
             "crowd; pinning them all to the loud end is a population-wide RSSI tell.")
-        self.assertIn("esp_random", sync, "persona tx power must be dithered, not fixed")
+        self.assertIn("rf_tx_sample", sync,
+                      "persona tx power must come from the shared sampler, not a private band")
 
-    def test_dither_never_returns_the_sentinel(self):
-        g = src("generate.c")
-        body = g.split("static int8_t dither_tx", 1)[-1].split("\n}", 1)[0]
+    def test_sampler_never_returns_the_sentinel(self):
+        r = src("rf_model.c")
+        body = r.split("int8_t rf_tx_sample", 1)[-1].split("\n}", 1)[0]
         self.assertIn("IDENTITY_TX_DEFAULT", body,
-                      "dither_tx must not be able to hand back the sentinel; doing so would put "
+                      "rf_tx_sample must not be able to hand back the sentinel; doing so would put "
                       "that identity at maximum output.")
 
 
@@ -68,22 +69,33 @@ class TxPowerSpreadIsLearned(unittest.TestCase):
     depends on the room, which is the argument for learning it.
     """
 
-    def test_dither_samples_the_model(self):
-        g = src("generate.c")
-        self.assertRegex(g, r"static int8_t dither_tx\(const rf_model_t \*m\)",
-                         "dither_tx must receive the model to sample observed RSSI shape")
-        body = g.split("static int8_t dither_tx", 1)[-1].split("\n}", 1)[0]
-        self.assertIn("rssi_bins", body, "dither no longer samples the learned RSSI shape")
+    def test_sampler_lives_with_the_model_and_reads_the_histogram(self):
+        """Shared by BOTH populations, so it belongs with the model rather than in generate.c.
+
+        The unbound crowd is built by generate_roster and bound personas by ble_device_sync. While
+        personas kept their own fixed band, the two halves of ONE on-air crowd drew from different
+        distributions -- which widened the combined spread past ambient's and scored worse than
+        either half alone (persona-pop rssi_physical 0.14 -> 0.34 before they were unified).
+        """
+        r = src("rf_model.c")
+        self.assertRegex(r, r"int8_t rf_tx_sample\(const rf_model_t \*m, uint32_t r\)",
+                         "rf_tx_sample must take the model and caller-supplied randomness")
+        body = r.split("int8_t rf_tx_sample", 1)[-1].split("\n}", 1)[0]
+        self.assertIn("rssi_bins", body, "the sampler no longer reads the learned RSSI shape")
+
+    def test_both_populations_use_the_same_sampler(self):
+        self.assertIn("rf_tx_sample", src("generate.c"), "the unbound crowd stopped using it")
+        self.assertIn("rf_tx_sample", src("ble_devices.c"), "personas stopped using it")
 
     def test_a_cold_start_spread_still_exists(self):
         """A board with no observations yet must still emit a plausible spread."""
-        g = src("generate.c")
-        body = g.split("static int8_t dither_tx", 1)[-1].split("\n}", 1)[0]
-        self.assertRegex(body, r"else\s*\{[\s\S]*?esp_random",
+        r = src("rf_model.c")
+        body = r.split("int8_t rf_tx_sample", 1)[-1].split("\n}", 1)[0]
+        self.assertRegex(body, r"else\s*\{",
                          "no cold-start branch: a fresh boot would emit one fixed power level")
 
     def test_range_stays_within_radio_capability(self):
-        g = src("generate.c")
+        g = src("rf_model.c")
         lo = int(re.search(r"#define\s+TX_MIN_DBM\s+\((-?\d+)\)", g).group(1))
         hi = int(re.search(r"#define\s+TX_MAX_DBM\s+\((-?\d+)\)", g).group(1))
         self.assertGreaterEqual(lo, -30, "below ESP32 BLE TX capability")

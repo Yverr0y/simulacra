@@ -93,7 +93,7 @@ $rc = $LASTEXITCODE
 
 # --- persona-active address-type reality (M10 personas tilt the BLE mix toward RPA) ---
 Write-Host "[persona] address-type mix with personas active ..." -ForegroundColor Cyan
-$ppop = & $exe --persona-pop $Seed 16 24 4000 1000
+$ppop = & $exe --persona-pop $Seed 16 24 4000 1000 $modelSeed
 if ($LASTEXITCODE -eq 0) {
     $ppopFile = Join-Path $OutDir "persona_pop.ndjson"
     Set-Content -Path $ppopFile -Value $ppop -Encoding ascii

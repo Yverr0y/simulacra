@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "identity.h"
+#include "rf_model.h"   // rf_model_t is an anonymous typedef; it cannot be forward-declared
 
 // Max concurrent persistent devices per board. The runtime population (set at init) is
 // clamped to this. Perceived density comes from turnover, not from raising this ceiling.
@@ -21,6 +22,12 @@
 // STATIC honours it by dying and being reborn as a NEW device rather than by rotating: an address
 // whose top two bits declare "I am static" must not rotate, or it contradicts itself on air.
 #define ADDR_MAX_ONAIR_MS  900000u    // 15 min
+
+// The model personas draw their TX power from, so bound personas and the unbound crowd sample ONE
+// distribution. Set by the coordinator; NULL is fine and yields the cold-start spread. Passed in
+// rather than reached for, because ble_devices sits below observe in the build and the host audit
+// links it without observe.c at all.
+void ble_devices_set_model(const rf_model_t *m);
 
 typedef enum { BLE_ATYPE_STATIC, BLE_ATYPE_RPA, BLE_ATYPE_NRPA } ble_atype_t;
 // Lifetime bands. There is deliberately NO persistent/"infrastructure" role.

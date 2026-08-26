@@ -16,6 +16,9 @@
 #include "radar_pad.h"
 #include "radar_retx.h"
 
+/* roster_stub.c: acts as the host's NVS so roster_init() can find a model. */
+void host_nvs_set_model(const rf_model_t *m);
+
 static const char *atype_of(const uint8_t addr[6]) {
     switch (addr[5] >> 6) { case 3: return "static"; case 1: return "rpa";
                             case 0: return "public"; default: return "nrpa"; }
@@ -176,6 +179,23 @@ int main(int argc, char **argv) {
         int      ticks  = argc > 5 ? (int)strtoul(argv[5], 0, 10) : 4000;
         unsigned tickms = argc > 6 ? (unsigned)strtoul(argv[6], 0, 10) : 1000;
         srand(seed);
+        // Optional model seed. WITHOUT it, roster_init() finds no stored model and falls through to
+        // roster_fill_from_templates() -- a pure template fill with NO learned behaviour -- so this
+        // run scores the cold-start path while claiming to model the real on-air population. That is
+        // exactly what happened until 2026-08-26: it reported an unchanged ad_structure through
+        // every change to the learning code, because it never had a model to learn from.
+        if (argc > 7) {
+            rf_model_t seeded; memset(&seeded, 0, sizeof seeded);
+            seeded.magic = RF_MODEL_MAGIC; seeded.version = RF_MODEL_VERSION;
+            if (load_model_seed(argv[7], &seeded) == 0) {
+                host_nvs_set_model(&seeded);
+                // Personas draw TX from the same model as the crowd, exactly as
+                // simulacra_main wires it on hardware.
+                static rf_model_t s_persona_model;
+                s_persona_model = seeded;
+                ble_devices_set_model(&s_persona_model);
+            }
+        }
         roster_init();
         uint32_t t = 0;
         phantom_init(nph, t);
