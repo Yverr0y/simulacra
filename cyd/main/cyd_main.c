@@ -779,7 +779,10 @@ static void broadcast_library(void){
         if (radar_wire_seal(frame, &flen, RADAR_TYPE_LEARN_SYNC, pl, plen,
                             tx_key(), s_salt, ctr) == 0)
             esp_now_send(BCAST, frame, flen);
-        vTaskDelay(pdMS_TO_TICKS(20));
+        // Jittered, not a flat 20 ms. A fixed inter-chunk gap is machine timing and is readable
+        // without the key; it also made every sweep an identically-shaped burst. Kept short
+        // because this runs on the UI task -- a long delay here stalls touch handling.
+        vTaskDelay(pdMS_TO_TICKS(20 + (esp_random() % 61)));
     }
     s_last_sync_ms = (uint32_t)(esp_timer_get_time()/1000);
     ESP_LOGW(TAG, "broadcast top-%u of %u recs", (unsigned)n, (unsigned)s_lib_count);
@@ -950,7 +953,10 @@ void app_main(void)
     bool espnow_suspended = false;                             // true while in modal exposure mode
     radar_view_t prev_view = RADAR_VIEW_HOME;                  // for exposure enter/exit transitions
     static uint16_t band[LCD_W*40]; uint16_t sweep=0; uint32_t last_req=0;
-    uint32_t req_period = 1000 + (esp_random() % 601);          // jittered poll period, 1.0-1.6 s
+    uint32_t req_period = 3000 + (esp_random() % 2001);          // jittered poll period, 3-5 s
+    // Was 1.0-1.6 s. Each poll draws STATUS replies (x2, spread) from EVERY decoy in range, so
+    // the telemetry loop was ~71 frames/min on its own. 3-5 s is still a live-feeling dashboard
+    // and only runs while the backlight is on. Raise it back if the UI feels stale.
     bool bl_was_on = true;
     ESP_LOGW(TAG, "panel up: live radar loop starting");
     for(;;){
@@ -1131,7 +1137,7 @@ void app_main(void)
                 s_req_repeats = radar_retx_adapt(s_req_repeats, alive >= s_prev_alive);
             s_prev_alive = alive;
             send_request(); last_req = now;
-            req_period = 1000 + (esp_random() % 601);
+            req_period = 3000 + (esp_random() % 2001);
         }
         {   // Spread REQUEST/CONFIG repeats rather than bursting them back-to-back.
             uint32_t rnow = (uint32_t)(esp_timer_get_time()/1000);
@@ -1157,10 +1163,28 @@ void app_main(void)
             ESP_LOGW(TAG, "enroll: window closed, pending request dropped");
         }
 #endif
-        static uint32_t last_sync = 0;
-        if (now - last_sync > 20000) { last_sync = now; broadcast_library(); }   // every 20 s
-        static uint32_t last_sig = 0;
-        if (now - last_sig > 60000) { last_sig = now; broadcast_sig_db(); }      // signature DB every 60 s
+        // Library sync. MEASURED 2026-08-26 with a board parked on ch1 in promiscuous mode: this
+        // was 98% of ALL ESP-NOW traffic on air -- 65.9 frames/min, ~22 back-to-back chunks every
+        // 20 s, against a real-ambient median of 0.000 action frames/min per device. The Vigil, not
+        // the decoys, is by far the loudest emitter in the system.
+        //
+        // Two problems, both fixed here. The period was FIXED at 20 s, so a listener who cannot
+        // read a sealed byte could still lock onto the metronome and count the fleet -- the same
+        // tell the 2026-08-25 opsec pass jittered everywhere else and missed here. And 20 s is
+        // absurdly frequent for a slowly-learned template library: nothing meaningful changes in
+        // that window, so it was re-sending the same top-N over and over.
+        static uint32_t last_sync = 0, sync_period = 240000;
+        if (now - last_sync > sync_period) {
+            last_sync = now;
+            sync_period = 240000 + (esp_random() % 120001);   // 4-6 min, re-drawn every fire
+            broadcast_library();
+        }
+        static uint32_t last_sig = 0, sig_period = 300000;
+        if (now - last_sig > sig_period) {                   // signature DB: was a fixed 60 s
+            last_sig = now;
+            sig_period = 300000 + (esp_random() % 120001);   // 5-7 min
+            broadcast_sig_db();
+        }
         static uint32_t last_save = 0;
         if (s_lib_dirty && now - last_save > LEARN_DB_SAVE_MS) {
             last_save = now; s_lib_dirty = false; learn_db_save();
