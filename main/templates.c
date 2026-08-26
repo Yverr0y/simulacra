@@ -41,7 +41,13 @@ static const device_template_t TEMPLATES[] = {
     // archetype       family            company svc     name           np  imin imax  w
     { "apple-mfg",     FMT_VENDOR_MFG,   0x004C, 0,      NULL,           0,  273,4009, 40 },
     { "samsung-mfg",   FMT_VENDOR_MFG,   0x0075, 0,      "Galaxy Buds", 35,  168,2009, 12 },
-    { "ms-mfg",        FMT_VENDOR_MFG,   0x0006, 0,      NULL,           0,  106, 958,  8 },
+    // NO MICROSOFT (0x0006) TEMPLATE, despite the census ranking it 3rd at 2.6% of real devices.
+    // Law 3 forbids ANY mfg-data element under company 0x0006, because that is how Swift Pair
+    // announces itself and a false negative raises a pairing pop-up on a stranger's phone. The rule
+    // is deliberately coarse: not all Microsoft mfg data is Swift Pair, but the cost of
+    // over-rejecting is one missing vendor, and the cost of under-rejecting lands on a bystander.
+    // Added briefly on 2026-08-26 during the library rebuild and caught by the new law3 gate in
+    // generate.c, which blanked every Microsoft payload rather than emitting it.
     { "vend-0040",     FMT_VENDOR_MFG,   0x0040, 0,      NULL,           0,  122,2379,  8 },
     { "vend-06a8",     FMT_VENDOR_MFG,   0x06A8, 0,      NULL,           0,  220, 908,  3 },
     { "vend-8802",     FMT_VENDOR_MFG,   0x8802, 0,      NULL,           0,  109, 614,  2 },
@@ -60,9 +66,19 @@ static const device_template_t TEMPLATES[] = {
     { "ibeacon",       FMT_IBEACON,      0x004C, 0,      NULL,           0,   90,1100,  6 },
     { "eddy-uid",      FMT_EDDYSTONE_UID,0,      0xFEAA, NULL,           0,   90,1100,  3 },
     { "eddy-url",      FMT_EDDYSTONE_URL,0,      0xFEAA, NULL,           0,  650,1500,  2 },
-    // Tracker family. Weight 1, not 14: Tile did not appear on ANY device in 2821 observed, and
-    // this family emits a byte pattern the project's own signature DB matches as a real tracker.
-    { "tile",          FMT_SVC_TRACKER,  0x0157, 0xFEED, NULL,           0, 1000,2000,  1 },
+    // NO TRACKER TEMPLATE. Removed 2026-08-26.
+    //
+    // The `tile` entry emitted service UUID 0xFEED, which is byte-for-byte the Tile signature this
+    // project seeds into its OWN detector (sig_seed.c sig_id=3, pattern {0xED,0xFE} at offset 0).
+    // Every tile-template decoy was therefore a guaranteed tracker match -- meaning nearby phones
+    // running tracker-detection would warn their owners that an unknown Tile was travelling with
+    // them. An anti-tracking tool must not make strangers' phones report a stalking device; that
+    // inverts the purpose at the human level, not just the technical one.
+    //
+    // Nothing is lost in realism: Tile appeared on ZERO of 2821 devices across four decoy-free
+    // captures. The family enum (FMT_SVC_TRACKER) is retained because learn.c still classifies a
+    // genuinely observed tracker shape with it for DETECTION purposes -- classifying one is fine,
+    // emitting one is not.
     // Minimal advertisers: real ambient BLE is mostly terse. The no-mfg structural mix
     // (generate.c pick_no_mfg_template) routes most no-mfg mass here, not to service-data beacons.
     { "minimal",       FMT_FLAGS_ONLY,   0,      0,      NULL,           0,  200,1200,  1 },
@@ -105,6 +121,17 @@ static void enc_vendor_mfg(uint16_t company_id, struct ble_hs_adv_fields *f, uin
     mfg[0] = (uint8_t)(company_id & 0xff);
     mfg[1] = (uint8_t)((company_id >> 8) & 0xff);
     mfg[2] = rnd_byte();                       // model/type
+    // Under Apple's company id the very next byte is the Continuity/Find My subtype selector, so a
+    // uniformly random draw lands on a forbidden one 3 times in 768. 0x07 and 0x0F raise pairing
+    // pop-ups on nearby phones (Law 3), and 0x12 is Find My -- which is ALSO the AirTag tracker
+    // signature this project seeds into its own detector (sig_seed.c sig_id=1). A decoy rolling
+    // 0x12 makes bystanders' phones warn that an unknown AirTag is travelling with them: the exact
+    // harm the project exists to oppose, produced by the tool meant to prevent it.
+    //
+    // learn.c already re-rolls this byte (see the law3_forbidden retry in learn_render); the
+    // TEMPLATE path never did, and Apple is now the highest-weighted template in the library.
+    if (company_id == 0x004C)
+        while (mfg[2] == 0x07 || mfg[2] == 0x0F || mfg[2] == 0x12) mfg[2] = rnd_byte();
     mfg[3] = (uint8_t)(rnd_byte() & 0x0f);     // status flags
     mfg[4] = (uint8_t)(esp_random() % 101);    // battery 0-100
     uint8_t extra = (uint8_t)(1 + (esp_random() % 3));

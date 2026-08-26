@@ -4,6 +4,7 @@
 #include "ble_devices.h"    // BLE_DEVICES_MAX: the real bound on the crowd (static array size)
 #include "roster.h"         // make_random_static_addr_pub
 #include "learn.h"          // learned templates (self-learning)
+#include "law3.h"           // fail-closed gate on what may go on air
 #include "esp_random.h"
 #include "esp_log.h"
 
@@ -222,6 +223,18 @@ size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
         }
         id->company_id = company;
         id->tx_power = dither_tx();
+        // Fail-closed emission gate on the TEMPLATE path. learn.c has re-rolled forbidden bytes
+        // since it was written; nothing checked template output, and the check is not redundant:
+        // enc_vendor_mfg draws a random model byte straight after the company id, so an Apple
+        // template could roll 0x07/0x0F (pairing pop-up on nearby phones) or 0x12 (Find My, which
+        // is also this project's own seeded AirTag signature). enc_vendor_mfg now avoids those
+        // three explicitly; this is the backstop for every other family and any future template.
+        // Dropping the payload is the right failure: a decoy with payload_len 0 is simply not
+        // built, whereas emitting one costs a bystander a stalking alert.
+        if (id->payload_len && law3_forbidden(id->payload, id->payload_len)) {
+            id->payload_len = 0;
+            continue;
+        }
         if (id->payload_len) built++;
     }
     return built;

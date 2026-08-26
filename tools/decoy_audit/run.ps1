@@ -62,6 +62,7 @@ if ($Rebuild -or -not (Test-Path $exe)) {
            ..\..\main\learn.c ..\..\components\simulacra_radar\law3.c ..\..\components\simulacra_radar\learn_wire.c `
            ..\..\main\uniq_id.c ..\..\main\phantom.c ..\..\main\probe_agents.c ..\..\main\ssid_pool.c ..\..\main\probe_frame.c `
            ..\..\main\fleet_pop.c ..\..\main\fleet.c `
+           ..\..\main\sig_store.c ..\..\components\simulacra_radar\sig_match.c ..\..\components\simulacra_radar\sig_seed.c `
            ..\..\components\simulacra_radar\radar_pad.c ..\..\components\simulacra_radar\radar_retx.c `
            /Fe:synth_dump.exe | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "build failed"; exit 3 }

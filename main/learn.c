@@ -3,11 +3,36 @@
 #include "learn.h"
 #include "law3.h"
 #include "learn_wire.h"     // learn_merge (shared)
+#include "sig_store.h"      // never learn a shape our own detector calls a tracker
 #include "esp_random.h"
 #include "esp_log.h"
 #include "nvs.h"
 
 static const char *TAG = "learn";
+
+// Refuse to learn (and therefore ever re-emit) a shape that matches a seeded THREAT signature.
+//
+// The learn loop copies real ambient shapes and renders decoys from them. Without this gate, a
+// genuine AirTag/Tile/SmartTag in the room gets its skeleton adopted and cloned -- and because
+// learn_strip KEEPS the service-UUID bytes (only the payload after them is masked), the clones
+// still match the tracker signature. Nearby phones would then warn their owners that an unknown
+// tracker is travelling with them. That is the precise harm this project exists to oppose, so
+// emitting one is never acceptable even though DETECTING one is the point.
+//
+// Coarse match on the two keys a signature selects by (company id, service uuid). This is
+// deliberately broader than sig_match: no pattern check, so it also rejects shapes that merely
+// share a tracker's vendor or service. Over-rejecting costs one learned shape; under-rejecting
+// costs a bystander a stalking alert.
+static bool shape_matches_threat(uint16_t company_id, uint16_t svc_uuid)
+{
+    const threat_sig_t *db = sig_store_db();
+    for (size_t i = 0; i < sig_store_count(); i++) {
+        if (db[i].svc_uuid16 && db[i].svc_uuid16 == svc_uuid) return true;
+        if (db[i].company_id != 0xFFFF && db[i].company_id == company_id &&
+            db[i].svc_uuid16 == 0x0000) return true;      // company-keyed signature (e.g. camera)
+    }
+    return false;
+}
 
 // AD type constants
 #define AD_FLAGS        0x01
@@ -96,6 +121,11 @@ bool learn_strip(const uint8_t *ad, uint8_t len, uint16_t company,
         }
         i += 1 + l;
     }
+    // Fail closed on threat-shaped advertisers: a real tracker in the room must never become a
+    // template we clone. Checked AFTER the parse because svc_uuid is only known here, and before
+    // the family assignment because a rejected shape is never stored at all.
+    if (shape_matches_threat(company, out->svc_uuid)) return false;
+
     // best-effort family (metadata for generation matching)
     if (company == 0x004C) out->family = FMT_IBEACON;
     else if (out->svc_uuid == 0xFEAA) out->family = FMT_EDDYSTONE_UID;
