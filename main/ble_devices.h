@@ -8,10 +8,19 @@
 #define BLE_DEVICES_MAX 32
 
 typedef enum { BLE_ATYPE_STATIC, BLE_ATYPE_RPA, BLE_ATYPE_NRPA } ble_atype_t;
-// PERSISTENT = long-lived static "infrastructure" (beacons/fixtures): one address held for hours,
-// matching the real ambient >2h presence tail that a purely-churning fleet lacks. Always static
-// (only a non-rotating address can actually persist on air).
-typedef enum { BLE_ROLE_TRANSIENT, BLE_ROLE_RESIDENT, BLE_ROLE_PERSISTENT } ble_role_t;
+// Lifetime bands. There is deliberately NO persistent/"infrastructure" role.
+//
+// One existed until 2026-08-26: a slice of static devices held a single address for 4-12 h to
+// reproduce the real ambient >2h presence tail, because presence_duration is a scored audit axis.
+// It was removed because it inverted the project's purpose. A decoy that keeps one address for
+// hours, on a board carried by the operator, is a better tracking handle than the phone it is
+// meant to cover - phones rotate their RPA every ~15 min. Cover that outlives the thing it covers
+// stops being cover. Population realism is instrumental; not being trackable is terminal, and when
+// the two conflict the terminal goal wins.
+//
+// The cost is accepted knowingly: the fleet no longer reproduces ambient's long presence tail, so
+// presence_duration separability rises in STATIONARY observation. See ADDR_MAX_ONAIR_MS.
+typedef enum { BLE_ROLE_TRANSIENT, BLE_ROLE_RESIDENT } ble_role_t;
 
 typedef struct {
     identity_t  id;             // advertising identity: addr + frozen behaviour (payload/itvl/tx/company/arch)

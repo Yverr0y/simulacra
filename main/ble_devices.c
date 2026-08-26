@@ -18,14 +18,23 @@
 #define TRANSIENT_MAX_MS   720000u    // 12 min
 #define RESIDENT_MIN_MS   1800000u    // 30 min
 #define RESIDENT_MAX_MS   5400000u    // 90 min
-// Persistent "infrastructure" band: a slice of STATIC devices hold one address for hours, matching
-// the real ambient >2h presence tail. ~28% of the static 52% -> ~15% of the fleet.
-#define PERSISTENT_PCT_OF_STATIC  28
-#define PERSISTENT_MIN_MS  14400000u  // 4 h  (outlives any normal session -> the address persists)
-#define PERSISTENT_MAX_MS  43200000u  // 12 h
+// HARD CEILING on how long any single address may stay on air, whatever its role or subtype.
+//
+// This is the project's core invariant, and until 2026-08-26 nothing enforced it. Rotation bounded
+// RPA and NRPA, but STATIC never rotates (next_rotate_ms = 0), so a static device's address was on
+// air for its entire life: up to 90 min on the resident band and 4-12 h on the since-removed
+// persistent band. With ATYPE_STATIC_W at 75, that was three quarters of the crowd. Measured on the
+// 2026-08-25 capture, static addresses reached 57.5 min on air inside a 60 min window while RPA
+// peaked at 19.3 min - and the capture was too short to see the persistent tail at all.
+//
+// 15 min matches real phone RPA rotation, so no decoy identity outlives the thing it is covering.
+// STATIC honours it by dying and being reborn as a NEW device rather than by rotating: an address
+// whose top two bits declare "I am static" must not rotate, or it contradicts itself on air.
+#define ADDR_MAX_ONAIR_MS  900000u    // 15 min
 // Rotation cadence per subtype (independent phase + wide jitter). STATIC never rotates.
+// RPA_ROT_MAX is held at the ceiling: a 20 min rotation would have outlived it.
 #define RPA_ROT_MIN_MS     600000u    // 10 min
-#define RPA_ROT_MAX_MS    1200000u    // 20 min
+#define RPA_ROT_MAX_MS     ADDR_MAX_ONAIR_MS   // 15 min
 #define NRPA_ROT_MIN_MS     60000u    // 1 min
 #define NRPA_ROT_MAX_MS    600000u    // 10 min
 // Bound-persona RPA rotates on the fast-realistic end (real phones ~15 min), shorter than the unbound
@@ -104,13 +113,7 @@ static void dev_spawn(ble_device_t *d, uint32_t now_ms)
     d->id = *src;                                   // copy behaviour (and its addr, overwritten next)
     d->atype = pick_atype();
     make_random_addr(d->id.addr, top2_for(d->atype));
-    // A slice of static devices are PERSISTENT infrastructure (one address held for hours);
-    // everyone else churns on the transient/resident bands. Only static can persist on air --
-    // an RPA/NRPA device rotates its address regardless of how long the device itself lives.
-    if (d->atype == BLE_ATYPE_STATIC && (esp_random() % 100u) < PERSISTENT_PCT_OF_STATIC) {
-        d->role    = BLE_ROLE_PERSISTENT;
-        d->life_ms = rnd_range(PERSISTENT_MIN_MS, PERSISTENT_MAX_MS);
-    } else if (d->atype == BLE_ATYPE_RPA) {
+    if (d->atype == BLE_ATYPE_RPA) {
         // RPA is always RESIDENT. Drawn into the transient band (2-12 min) an RPA device would
         // usually die before its 10-20 min rotation deadline, presenting an address whose top two
         // bits advertise "I rotate" while it demonstrably never does - an inverted signal. Forcing
@@ -130,6 +133,13 @@ static void dev_spawn(ble_device_t *d, uint32_t now_ms)
         uint32_t l = (uint32_t)((float)d->life_ms / s_accel);
         d->life_ms = l < 1000u ? 1000u : l;         // never below a second (would thrash the radios)
     }
+    // A STATIC device never rotates, so its address is on air for exactly its lifetime. Cap the
+    // life to enforce ADDR_MAX_ONAIR_MS. It then dies and is reborn as a WHOLLY new device: fresh
+    // unique address, freshly drawn behaviour, no continuity of any kind with what it was.
+    // Rotating subtypes are already bounded by their rotation cadence, both of which sit at or
+    // under the ceiling. Applied after turbo/accel so those can only ever shorten, never extend.
+    if (d->atype == BLE_ATYPE_STATIC && d->life_ms > ADDR_MAX_ONAIR_MS)
+        d->life_ms = rnd_range(ADDR_MAX_ONAIR_MS / 2u, ADDR_MAX_ONAIR_MS);
     d->born_ms = now_ms;
     d->alive = true;
     // Independent rotation phase: first rotation is a full jittered interval out from birth.
