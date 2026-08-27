@@ -71,6 +71,31 @@ raise the volume of traffic someone has to process. The same rules above apply t
   models over an authenticated ESP-NOW link, so the fleet behaves like one diverse crowd rather
   than several identical decoys.
 
+## What it doesn't do
+
+These follow directly from the design rather than being gaps waiting to be filled, so they're worth
+stating plainly.
+
+- **It can't hide a device that already has a persistent identifier.** Everything Simulacra emits is
+  gone inside 15 minutes and never returns, so in a fixed location long-term observation separates
+  decoys from real devices with a single filter: *any identifier seen on more than one day*. That
+  drops the whole fleet and leaves the real persistent set untouched. Simulacra defeats discovery,
+  census, and correlation. It does not defeat a targeted lookup of an identifier someone already
+  holds, and nothing external to the device can - that's a device-side fix (client MAC
+  randomisation, suppressing probe requests once associated, radios off on fixed infrastructure that
+  doesn't need them). In a static deployment the honest value is that an observer can't tell how many
+  people are there or what changed week to week.
+- **`presence_duration` is the weakest axis on the audit scorecard, deliberately.** It's the measured
+  cost of the 15-minute ceiling. Closing it by re-adding long-lived identities is the one fix that
+  must not be applied, and `tools/decoy_audit/tests/test_addr_onair_cap.py` exists to fail if someone
+  tries.
+- **One Vigil per fleet, for now.** Authorisation is key-based rather than identity-based, so any
+  Vigil holding the control key is already authorised. What blocks it is the per-decoy replay floor:
+  it's a single salt-independent counter, and two Vigils spending their own counter blocks would
+  silently fight over it. Fixable (make the floor per-Vigil, keyed by signing identity, the same
+  shape the telemetry path already uses) but it's a wire-version bump and not yet started.
+- **Decoys are non-connectable by design.** They don't beacon fake APs or accept associations.
+
 ## Architecture - the nodes
 
 | Node | Board | Role |
@@ -87,16 +112,20 @@ the lower-power/everyday-carry variant.
 ## Features
 
 - Rotating BLE decoy crowd with realistic random-static MACs, vendor/format shapes, and advertising
-  cadence - including **persistent devices with per-type address rotation** (RPAs/NRPAs rotate on
-  realistic schedules, static beacons hold) and a **death/rebirth lifecycle**, so the population
-  turns over like a real crowd instead of a fixed set of decoys.
-- **Wi-Fi PAN cover:** independent, archetype-faithful probe-request agents (iPhone / Galaxy /
-  Pixel / generic Android). Each fake phone carries its **own 802.11 sequence counter**, so the
-  real device can't be fingerprinted out of the probe traffic by its sequence/timing constellation.
-  The agent population **matches the ambient device density** (divided across the live fleet so the
-  crowd never over-populates an empty room), and a realistic majority **probe named public networks**
-  - drawn from a fixed pool of ubiquitous open SSIDs (xfinitywifi, attwifi, eduroam …), **never an
-  observed or local one** - so the fake phones blend with the real phones probing the same hotspots.
+  cadence, on a **death/rebirth lifecycle** so the population turns over like a real crowd instead of
+  a fixed set of decoys. Every identifier is capped at **15 minutes on air** (`ADDR_MAX_ONAIR_MS`),
+  matching real-phone RPA rotation: RPAs/NRPAs rotate on realistic schedules, and static addresses
+  honour the same ceiling by dying and being reborn as wholly new devices rather than rotating - an
+  address whose top two bits declare "I am static" must not rotate, or it contradicts itself on air.
+- **Wi-Fi PAN cover:** independent probe-request agents built from **capture-derived IE structures**.
+  Five ship, including two 2.4 GHz-only ones modelling devices with no 5 GHz radio - a class an
+  invented archetype table never produces. Each fake phone carries its **own 802.11 sequence
+  counter**, so the real device can't be fingerprinted out of the probe traffic by its
+  sequence/timing constellation. The agent population **matches the ambient device density**, and a
+  realistic **minority (~21%, measured)** probe named public networks - drawn from a fixed pool of
+  ubiquitous open SSIDs (xfinitywifi, attwifi, eduroam …), **never an observed or local one** - so
+  the fake phones blend with the real phones probing the same hotspots. A persona's saved-network set
+  is **redrawn on every MAC rotation**, so it can't be used to link one MAC to the next.
 - On-device **self-learning** of ambient device *shapes* into new decoy archetypes (structure-only,
   Law-3 gated), synced across the fleet and persisted to an AES-GCM-sealed SD library on Vigil, keyed
   from the CONTROL secret in the provisioned regime (`-DSIMULACRA_FLEET_PROVISION=1` - rotates
@@ -226,7 +255,7 @@ secret) - a half-rotated fleet stops verifying.
 ## Repository layout
 
 ```
-main/                    decoy firmware (churn, persistent devices, probes, self-learning, detection, ESP-NOW)
+main/                    decoy firmware (churn, lifecycle, probes, self-learning, detection, ESP-NOW)
 cyd/                     Vigil controller firmware (display, touch, SD librarian, fleet authority)
 components/simulacra_radar/  shared code (wire formats, learning, signatures, rendering)
 components/tweetnacl/     vendored TweetNaCl (Ed25519 / X25519)
@@ -249,9 +278,9 @@ verified against the same source that runs on-device:
   matcher with dwell/co-travel analysis.
 - **`tools/decoy_audit/`** - compile the real BLE generator on the host and score how separable the
   synthetic crowd is from a real capture, as a ranked scorecard plus a single regression-gate number.
-- **`tools/probe_audit/`** - byte-exact verification that the Wi-Fi probe frames match real-phone
-  archetypes, and that directed-SSID probes only ever name generic **public** networks from a fixed
-  compiled-in pool - never one sourced from observed or local traffic.
+- **`tools/probe_audit/`** - byte-exact verification that the Wi-Fi probe frames match the
+  capture-derived IE structures, and that directed-SSID probes only ever name generic **public**
+  networks from a fixed compiled-in pool - never one sourced from observed or local traffic.
 - **`tools/radar_audit/`** - compiles the Vigil console's own render/control/fleet-status code on the
   host, so every screen (radar, node/threat detail, INFO console, CONTROL presets) and the fleet
   aggregation logic (stale-node pruning, threat dedup, live-vs-pending preset) are verified against
@@ -271,6 +300,8 @@ Newest first - full history in [`CHANGELOG.md`](CHANGELOG.md). Forward-looking m
   the point - a decoy holding one address for hours, carried by the operator, is a *better* tracking
   handle than the phone it covers. A 15-minute ceiling now applies across both radios, matching real
   phone RPA rotation, and static devices honour it by dying and being reborn as wholly new devices.
+  Wi-Fi saved-network sets are redrawn on every MAC rotation too - a set that outlives a rotation is
+  the standard way MAC randomisation gets defeated in the field.
 - **AD structure and Wi-Fi probe shape are learned, not hardcoded.** Both were fitted to single
   captures and did not survive a change of environment; a census of 877 real probing devices found
   none of the shipped Wi-Fi IE layouts present even once. Structure now tracks the room the way
