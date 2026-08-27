@@ -13,6 +13,11 @@
 #include "uniq_id.h"
 #include "phantom.h"
 #include "probe_agents.h"
+#include "radar_pad.h"
+#include "radar_retx.h"
+
+/* roster_stub.c: acts as the host's NVS so roster_init() can find a model. */
+void host_nvs_set_model(const rf_model_t *m);
 
 static const char *atype_of(const uint8_t addr[6]) {
     switch (addr[5] >> 6) { case 3: return "static"; case 1: return "rpa";
@@ -48,7 +53,12 @@ static void ad_types_onair(const uint8_t *ad, size_t len, char *out, size_t outs
     }
 }
 /* Read a model-seed file (produced by capture_profile.py) into an rf_model_t.
-   Format: "POP <f>", "V <cid_hex> <count> <b0..b6>", "OTHER <count> <b0..b6>". */
+   Format: "POP <f>", "V <cid_hex> <count> <b0..b6>", "OTHER <count> <b0..b6>",
+           "ADS <flags_only> <uuid16> <svcdata> <other>".
+   ADS carries the no-mfg AD-structure mix so the generator exercises its LEARNED path. Without it
+   every audit run would score generate.c's cold-start default -- a branch the firmware takes only
+   for its first few seconds in an unfamiliar room -- and the ad_structure number would describe
+   code that barely runs. */
 static int load_model_seed(const char *path, rf_model_t *m) {
     FILE *fp = fopen(path, "r");
     if (!fp) return 1;
@@ -56,6 +66,25 @@ static int load_model_seed(const char *path, rf_model_t *m) {
     while (fgets(line, sizeof line, fp)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         if (!strncmp(line, "POP", 3)) { sscanf(line + 3, "%f", &m->pop_ewma); continue; }
+        if (!strncmp(line, "RSSI", 4)) {
+            unsigned a[RF_RSSI_BINS] = {0};
+            sscanf(line + 4, "%u %u %u %u %u %u %u %u",
+                   &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6], &a[7]);
+            for (int i = 0; i < RF_RSSI_BINS; i++) m->rssi_bins[i] = a[i];
+            continue;
+        }
+        if (!strncmp(line, "MFGS", 4)) {
+            unsigned a[RF_MFGSTRUCT_BINS] = {0};
+            sscanf(line + 4, "%u %u %u %u %u", &a[0], &a[1], &a[2], &a[3], &a[4]);
+            for (int i = 0; i < RF_MFGSTRUCT_BINS; i++) m->mfgstruct_bins[i] = a[i];
+            continue;
+        }
+        if (!strncmp(line, "ADS", 3)) {
+            unsigned a[RF_ADSTRUCT_BINS] = {0};
+            sscanf(line + 3, "%u %u %u %u", &a[0], &a[1], &a[2], &a[3]);
+            for (int i = 0; i < RF_ADSTRUCT_BINS; i++) m->adstruct_bins[i] = a[i];
+            continue;
+        }
         if (!strncmp(line, "OTHER", 5)) {
             uint32_t c, b[7] = {0};
             sscanf(line + 5, "%u %u %u %u %u %u %u %u", &c, &b[0],&b[1],&b[2],&b[3],&b[4],&b[5],&b[6]);
@@ -150,6 +179,23 @@ int main(int argc, char **argv) {
         int      ticks  = argc > 5 ? (int)strtoul(argv[5], 0, 10) : 4000;
         unsigned tickms = argc > 6 ? (unsigned)strtoul(argv[6], 0, 10) : 1000;
         srand(seed);
+        // Optional model seed. WITHOUT it, roster_init() finds no stored model and falls through to
+        // roster_fill_from_templates() -- a pure template fill with NO learned behaviour -- so this
+        // run scores the cold-start path while claiming to model the real on-air population. That is
+        // exactly what happened until 2026-08-26: it reported an unchanged ad_structure through
+        // every change to the learning code, because it never had a model to learn from.
+        if (argc > 7) {
+            rf_model_t seeded; memset(&seeded, 0, sizeof seeded);
+            seeded.magic = RF_MODEL_MAGIC; seeded.version = RF_MODEL_VERSION;
+            if (load_model_seed(argv[7], &seeded) == 0) {
+                host_nvs_set_model(&seeded);
+                // Personas draw TX from the same model as the crowd, exactly as
+                // simulacra_main wires it on hardware.
+                static rf_model_t s_persona_model;
+                s_persona_model = seeded;
+                ble_devices_set_model(&s_persona_model);
+            }
+        }
         roster_init();
         uint32_t t = 0;
         phantom_init(nph, t);
@@ -253,6 +299,38 @@ int main(int argc, char **argv) {
         printf("%d\n", uniq_try(a) ? 1 : 0);   // 0 = routed (recorded), 1 = not routed
         return 0;
     }
+    if (argc > 1 && strcmp(argv[1], "--retx") == 0) {
+        int reps    = argc > 2 ? (int)strtol(argv[2], 0, 10) : 4;
+        unsigned sd = argc > 3 ? (unsigned)strtoul(argv[3], 0, 10) : 1;
+        uint32_t hz = argc > 4 ? (uint32_t)strtoul(argv[4], 0, 10) : 5000;
+        srand(sd);
+        radar_retx_t r; uint8_t rf[8] = {0};
+        radar_retx_arm(&r, rf, sizeof rf, (uint8_t)reps, 0);
+        for (uint32_t t = 0; t <= hz; t++)
+            if (radar_retx_due(&r, t, (uint32_t)rand())) printf("%u\n", (unsigned)t);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--retxadapt") == 0) {
+        uint8_t cur = argc > 2 ? (uint8_t)strtoul(argv[2], 0, 10) : 4;
+        const char *seq = argc > 3 ? argv[3] : "";
+        for (const char *p = seq; *p; p++) {
+            cur = radar_retx_adapt(cur, *p == '1');
+            printf("%u\n", (unsigned)cur);
+        }
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--padbucket") == 0) {
+        size_t n = argc > 2 ? (size_t)strtoul(argv[2], 0, 10) : 0;
+        printf("%u\n", (unsigned)radar_pad_plaintext_len(n));
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--acttarget") == 0) {
+        rf_model_t m; memset(&m, 0, sizeof m);
+        m.pop_ewma = argc > 2 ? (float)strtod(argv[2], 0) : 0.0f;
+        m.sweeps   = 1;
+        printf("%u\n", (unsigned)generate_active_target(&m));
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "--devices") == 0) {
         unsigned seed   = argc > 2 ? (unsigned)strtoul(argv[2], 0, 10) : 1;
         int      ndev   = argc > 3 ? (int)strtoul(argv[3], 0, 10) : 16;
@@ -277,8 +355,7 @@ int main(int argc, char **argv) {
                     const char *ev = (d->born_ms == t) ? "born" : "rotate";
                     const char *at = d->atype == BLE_ATYPE_STATIC ? "static"
                                    : d->atype == BLE_ATYPE_RPA    ? "rpa" : "nrpa";
-                    const char *ro = d->role == BLE_ROLE_PERSISTENT ? "persistent"
-                                   : d->role == BLE_ROLE_RESIDENT   ? "resident" : "transient";
+                    const char *ro = d->role == BLE_ROLE_RESIDENT ? "resident" : "transient";
                     char hex[13];
                     for (int b = 0; b < 6; b++) sprintf(hex + b*2, "%02x", d->id.addr[b]);
                     printf("D %u %d %s %s %s %s %u %u\n", (unsigned)t, i, hex, at, ro, ev,

@@ -12,6 +12,7 @@
 #include "radar_render.h"
 #include "radar_gfx.h"
 #include "radar_wire.h"
+#include "radar_retx.h"
 #include "fleet_status.h"
 #include "radar_ui.h"
 #include "expo_sniff.h"
@@ -460,7 +461,7 @@ static void broadcast_sig_db(void)
         if (radar_wire_seal(frame, &flen, RADAR_TYPE_SIG_SYNC, pl, plen,
                             tx_key(), s_salt, ctr) == 0)
             esp_now_send(BCAST, frame, flen);
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(20 + (esp_random() % 61)));   // jittered, as broadcast_library
     }
     ESP_LOGW(TAG, "sig: broadcast v%u (%u sigs, %u chunks)",
              (unsigned)s_sigdb_ver, (unsigned)s_sigdb_n, (unsigned)chunks);
@@ -545,27 +546,61 @@ static void drain_rx(void){
     }
 }
 
+// Retransmit schedulers. Repeats are spread by a jittered 40-120 ms instead of blasted
+// back-to-back, so they stop reading as an obvious retransmit train on air.
+static radar_retx_t s_req_retx;
+static radar_retx_t s_cfg_retx;
+// REQUEST redundancy adapts to observed delivery (see the poll loop). CONFIG does not.
+static uint8_t      s_req_repeats = RADAR_RETX_MAX_REPEATS;
+
 static void send_request(void){
     uint8_t nonce[4]; esp_fill_random(nonce,4);
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
     uint64_t ctr; if (!next_ctr(&ctr)) return;
     if (radar_wire_seal(frame,&flen,RADAR_TYPE_REQUEST,nonce,4,tx_key(),s_salt,ctr)==0)
-        for (int i=0;i<4;i++) esp_now_send(BCAST,frame,flen);
+        radar_retx_arm(&s_req_retx, frame, flen, s_req_repeats,
+                       (uint32_t)(esp_timer_get_time()/1000));
 }
 #ifdef SIMULACRA_CONFIG_CTRL
+// Operator-set AUTO cap as a FLEET TOTAL (0 = uncapped). Decoys are additive and know nothing
+// about fleet size, so the Vigil divides by its own roster before transmitting a per-board value.
+static uint16_t s_cap_total = 0;
+
+// Live nodes on the roster. The cap is a fleet total the operator set; dividing by the number of
+// boards actually reporting is what turns it into each board's share.
+static int fleet_alive_count(uint32_t now_ms)
+{
+    int n = 0;
+    for (int i = 0; i < fleet_status_count(&s_fleet); i++) {
+        uint8_t nid; const radar_wire_status_t *nst; bool nal;
+        if (fleet_status_at(&s_fleet, i, &nid, &nst, &nal, now_ms) && nal) n++;
+    }
+    return n < 1 ? 1 : n;                       // never divide by zero; a lone Vigil assumes 1
+}
+
 static void send_config(uint8_t preset)
 {
     uint64_t ctr; if (!next_ctr(&ctr)) return;
     uint8_t nonce12[12]; memcpy(nonce12, s_salt, RADAR_SALT_LEN);   // salt(8) || counter(4 BE)
     for (int i = 0; i < 4; i++) nonce12[RADAR_SALT_LEN+i] = (uint8_t)(ctr >> (24 - 8*i));
-    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = preset };
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    int nodes = fleet_alive_count(now);
+    int per_node = s_cap_total ? (s_cap_total + nodes / 2) / nodes : 0;   // round to nearest
+    if (per_node > 255) per_node = 255;
+    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = preset,
+                         .cap = (uint8_t)per_node };
     uint8_t pl[CONFIG_WIRE_PAYLOAD_LEN];
     if (config_wire_pack_signed(pl, sizeof pl, &cmd, nonce12, SIMULACRA_CTRL_SK) < 0) return;
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
+    // CONFIG stays at an unconditional 4x, never adaptive. It is rare and operator-initiated, and a
+    // silently dropped command means the console reports a preset the fleet never applied -- the
+    // same "display lies about the firmware" failure class as DRIFT-1. Reliability wins here.
     if (radar_wire_seal(frame, &flen, RADAR_TYPE_CONFIG, pl, sizeof pl,
                         tx_key(), s_salt, ctr) == 0)
-        for (int i = 0; i < 4; i++) esp_now_send(BCAST, frame, flen);
-    ESP_LOGW(TAG, "sent CONFIG preset %u", (unsigned)preset);
+        radar_retx_arm(&s_cfg_retx, frame, flen, RADAR_RETX_MAX_REPEATS,
+                       (uint32_t)(esp_timer_get_time()/1000));
+    ESP_LOGW(TAG, "sent CONFIG preset %u (cap %u total / %d nodes = %d each)",
+             (unsigned)preset, (unsigned)s_cap_total, nodes, per_node);
 }
 #endif
 
@@ -728,11 +763,62 @@ static void fleet_modal_touch(int px, int py, uint32_t now){
 }
 #endif
 
+// What peers have already been told, so a sweep can send only MATERIAL changes.
+//
+// The receive path (esp_now_link.c) unpacks a chunk and calls learn_ingest_wire per record, with no
+// reassembly: chunk_index/chunk_count are informational and learn_merge_wire is idempotent, so
+// every record stands alone and a partial set is safe to send. Material change is exactly what
+// learn_merge_wire acts on -- a new shape_hash, a raised reinforce_count, or a widened interval
+// band -- so those four fields are the fingerprint. Anything else re-sends a record the receiver
+// discards as a no-op duplicate.
+typedef struct { uint32_t hash; uint16_t rc, imin, imax; } sync_fp_t;
+static sync_fp_t s_sync_fp[LEARN_SYNC_TOP_N];
+static size_t    s_sync_fp_n;
+static uint8_t   s_sync_since_full;
+#define SYNC_FULL_EVERY 6      // full resync every Nth sweep, repairing anything a peer missed
+
+static bool sync_fp_changed(const learned_template_t *t)
+{
+    for (size_t i = 0; i < s_sync_fp_n; i++) {
+        if (s_sync_fp[i].hash != t->shape_hash) continue;
+        return s_sync_fp[i].rc   != t->reinforce_count ||
+               s_sync_fp[i].imin != t->itvl_min_ms ||
+               s_sync_fp[i].imax != t->itvl_max_ms;
+    }
+    return true;                                    // unseen shape
+}
+
 static void broadcast_library(void){
     if (s_lib_count == 0) return;
     s_lib_sweep++;
     static learned_template_t sel[LEARN_SYNC_TOP_N];
     size_t n = learn_top_n(s_lib, s_lib_count, sel, LEARN_SYNC_TOP_N);
+
+    // MEASURED 2026-08-26: re-sending the whole top-64 every sweep was 98% of ALL ESP-NOW traffic
+    // on air (65.9 frames/min, 22 back-to-back chunks). A learned library changes slowly, so nearly
+    // every one of those records was a no-op duplicate the receiver threw away.
+    bool full = (s_sync_fp_n == 0) || (++s_sync_since_full >= SYNC_FULL_EVERY);
+    static bool send_it[LEARN_SYNC_TOP_N];
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++) {
+        send_it[i] = full || sync_fp_changed(&sel[i]);
+        if (send_it[i]) m++;
+    }
+    // Refresh fingerprints from the FULL top-N before compacting sel, so a record that drops out of
+    // the top-N is forgotten and gets re-sent if it comes back.
+    for (size_t i = 0; i < n; i++) {
+        s_sync_fp[i].hash = sel[i].shape_hash;
+        s_sync_fp[i].rc   = sel[i].reinforce_count;
+        s_sync_fp[i].imin = sel[i].itvl_min_ms;
+        s_sync_fp[i].imax = sel[i].itvl_max_ms;
+    }
+    s_sync_fp_n = n;
+    if (full) s_sync_since_full = 0;
+    if (m == 0) { ESP_LOGW(TAG, "lib sync: nothing changed (%u recs held)", (unsigned)n); return; }
+    for (size_t i = 0, w = 0; i < n; i++)            // compact in place
+        if (send_it[i]) { if (w != i) sel[w] = sel[i]; w++; }
+    n = m;
+
     uint8_t chunks = (uint8_t)((n + LEARN_WIRE_RECS_PER_CHUNK - 1) / LEARN_WIRE_RECS_PER_CHUNK);
     for (uint8_t ci = 0; ci < chunks; ci++) {
         size_t off = (size_t)ci * LEARN_WIRE_RECS_PER_CHUNK;
@@ -744,16 +830,28 @@ static void broadcast_library(void){
         if (radar_wire_seal(frame, &flen, RADAR_TYPE_LEARN_SYNC, pl, plen,
                             tx_key(), s_salt, ctr) == 0)
             esp_now_send(BCAST, frame, flen);
-        vTaskDelay(pdMS_TO_TICKS(20));
+        // Jittered, not a flat 20 ms. A fixed inter-chunk gap is machine timing and is readable
+        // without the key; it also made every sweep an identically-shaped burst. Kept short
+        // because this runs on the UI task -- a long delay here stalls touch handling.
+        vTaskDelay(pdMS_TO_TICKS(20 + (esp_random() % 61)));
     }
     s_last_sync_ms = (uint32_t)(esp_timer_get_time()/1000);
-    ESP_LOGW(TAG, "broadcast top-%u of %u recs", (unsigned)n, (unsigned)s_lib_count);
+    ESP_LOGW(TAG, "lib sync: sent %u recs in %u chunks (%s) of %u held",
+             (unsigned)n, (unsigned)chunks, full ? "FULL" : "delta", (unsigned)s_lib_count);
 }
 static uint32_t age_s(uint32_t now, uint32_t ts){ return ts ? (uint32_t)(now - ts)/1000u : UINT32_MAX; }
 static void net_init(void){
     esp_netif_init(); esp_event_loop_create_default();
     wifi_init_config_t c=WIFI_INIT_CONFIG_DEFAULT(); esp_wifi_init(&c);
     esp_wifi_set_storage(WIFI_STORAGE_RAM); esp_wifi_set_mode(WIFI_MODE_STA); esp_wifi_start();
+    // Randomize the STA source MAC (locally-administered), exactly as the decoys do in
+    // esp_now_link.c. The factory MAC carries a registered Espressif OUI, so every control frame
+    // this node broadcast was stamped with the chip vendor -- a direct hardware identifier on air,
+    // and the Vigil is the one node that transmits on a fixed ~1 Hz cadence. espnow_sniff.c flags
+    // this as [FACTORY!] vs [LAA] if it ever regresses.
+    uint8_t mac[6]; esp_wifi_get_mac(WIFI_IF_STA, mac);
+    esp_fill_random(mac, 6); mac[0] = (mac[0] & 0xFE) | 0x02;      // LAA, unicast
+    esp_wifi_set_mac(WIFI_IF_STA, mac);                            // best-effort; ignore rc
     esp_wifi_set_channel(ESPNOW_CH, WIFI_SECOND_CHAN_NONE);
     esp_now_init();
     esp_now_peer_info_t p={0}; memcpy(p.peer_addr,BCAST,6); p.channel=ESPNOW_CH; p.ifidx=WIFI_IF_STA;
@@ -907,6 +1005,10 @@ void app_main(void)
     bool espnow_suspended = false;                             // true while in modal exposure mode
     radar_view_t prev_view = RADAR_VIEW_HOME;                  // for exposure enter/exit transitions
     static uint16_t band[LCD_W*40]; uint16_t sweep=0; uint32_t last_req=0;
+    uint32_t req_period = 3000 + (esp_random() % 2001);          // jittered poll period, 3-5 s
+    // Was 1.0-1.6 s. Each poll draws STATUS replies (x2, spread) from EVERY decoy in range, so
+    // the telemetry loop was ~71 frames/min on its own. 3-5 s is still a live-feeling dashboard
+    // and only runs while the backlight is on. Raise it back if the UI feels stale.
     bool bl_was_on = true;
     ESP_LOGW(TAG, "panel up: live radar loop starting");
     for(;;){
@@ -1000,6 +1102,15 @@ void app_main(void)
                         send_config(ui.sel_preset);
                         radar_ctrl_mark_sent(&ui, now);
                     }
+                } else if (ty >= 40 && ty <= 200 && tx >= 80 && tx <= 160) {
+                    // Centre band: step the AUTO cap (a FLEET TOTAL). Cycles rather than using
+                    // +/- zones so it needs no new geometry. 0 = uncapped. Takes effect on the
+                    // next SEND, like the preset selection beside it.
+                    s_clear_arm_ms = 0; s_turbo_arm_ms = 0;
+                    static const uint16_t CAP_STEPS[] = { 0, 32, 64, 96, 128 };
+                    size_t n = sizeof CAP_STEPS / sizeof CAP_STEPS[0], i = 0;
+                    while (i < n && CAP_STEPS[i] != s_cap_total) i++;
+                    s_cap_total = CAP_STEPS[(i + 1) % n];
                 } else if (tx < 80) {                    // left zone: prev == cycle-around
                     s_clear_arm_ms = 0; s_turbo_arm_ms = 0;
                     for (int i = 0; i < RADAR_CTRL_PRESET_COUNT - 1; i++) radar_ctrl_select_next(&ui);
@@ -1063,8 +1174,30 @@ void app_main(void)
             if (s_expo.state == EXPO_BASELINE || s_expo.state == EXPO_WATCH) radar_ui_note_input(&ui, now);
         }
         prev_view = ui.view;
-        // keep asking every ~1s while the screen is awake so data stays fresh (not while sniffing)
-        if (ui.backlight_on && !espnow_suspended && now-last_req > 1000) { send_request(); last_req=now; }
+        // Keep asking while the screen is awake so data stays fresh (not while sniffing). The
+        // period is jittered 1.0-1.6 s rather than a flat 1.000 s: the Vigil is the most regular
+        // emitter in the fleet, and an exact 1 Hz broadcast is a lock-on signal for anyone watching
+        // the channel, even without reading a sealed byte. Freshness is unaffected at this scale --
+        // the stale threshold is 12 s.
+        if (ui.backlight_on && !espnow_suspended && now - last_req > req_period) {
+            // Judge the cycle that just ended before starting a new one: did the fleet stay as
+            // populated as it was? fleet_alive_count() counts nodes whose last status is inside the
+            // stale window, so a node that answered is still counted and one that went quiet is not.
+            static int s_prev_alive = -1;
+            int alive = fleet_alive_count(now);
+            if (s_prev_alive >= 0)
+                s_req_repeats = radar_retx_adapt(s_req_repeats, alive >= s_prev_alive);
+            s_prev_alive = alive;
+            send_request(); last_req = now;
+            req_period = 3000 + (esp_random() % 2001);
+        }
+        {   // Spread REQUEST/CONFIG repeats rather than bursting them back-to-back.
+            uint32_t rnow = (uint32_t)(esp_timer_get_time()/1000);
+            if (radar_retx_due(&s_req_retx, rnow, esp_random()))
+                esp_now_send(BCAST, s_req_retx.frame, s_req_retx.len);
+            if (radar_retx_due(&s_cfg_retx, rnow, esp_random()))
+                esp_now_send(BCAST, s_cfg_retx.frame, s_cfg_retx.len);
+        }
         drain_rx();   // ALL frame processing, off the Wi-Fi driver task. Must sit OUTSIDE the
                       // provisioning gate: the baked fleet build has no FLEET_PROVISION, and with
                       // the drain compiled out the Vigil receives nothing at all -- every node
@@ -1082,10 +1215,53 @@ void app_main(void)
             ESP_LOGW(TAG, "enroll: window closed, pending request dropped");
         }
 #endif
-        static uint32_t last_sync = 0;
-        if (now - last_sync > 20000) { last_sync = now; broadcast_library(); }   // every 20 s
-        static uint32_t last_sig = 0;
-        if (now - last_sig > 60000) { last_sig = now; broadcast_sig_db(); }      // signature DB every 60 s
+        // Library sync. MEASURED 2026-08-26 with a board parked on ch1 in promiscuous mode: this
+        // was 98% of ALL ESP-NOW traffic on air -- 65.9 frames/min, ~22 back-to-back chunks every
+        // 20 s, against a real-ambient median of 0.000 action frames/min per device. The Vigil, not
+        // the decoys, is by far the loudest emitter in the system.
+        //
+        // Two problems, both fixed here. The period was FIXED at 20 s, so a listener who cannot
+        // read a sealed byte could still lock onto the metronome and count the fleet -- the same
+        // tell the 2026-08-25 opsec pass jittered everywhere else and missed here. And 20 s is
+        // absurdly frequent for a slowly-learned template library: nothing meaningful changes in
+        // that window, so it was re-sending the same top-N over and over.
+        // With broadcast_library() now sending only material changes, a sweep that finds nothing
+        // new costs ZERO frames, so frequency is nearly free and the period can stay responsive.
+        // The cost is now carried entirely by the periodic FULL resync (SYNC_FULL_EVERY sweeps),
+        // which lands roughly every 12-18 min.
+        // Rotate this node's link identity -- source MAC AND wire salt, together. Both were drawn
+        // once at startup and never again, so the Vigil carried a stable identifier for its whole
+        // powered life while every other identifier the project emits is capped at 15 min. They
+        // rotate together because the salt is the first 8 bytes of every frame in cleartext: moving
+        // only the MAC would let an observer follow the salt instead, and vice versa.
+        //
+        // The Vigil matters more than a decoy here -- it is the node that transmits on the most
+        // regular cadence, so it is the easiest to follow.
+        //
+        // The counter is NOT reset. Nonce uniqueness needs (salt, counter) unique and a fresh salt
+        // gives that; resetting would break the decoys' monotonic CONFIG replay floor, which is
+        // counter-only and salt-independent (see ctr_reserve_block).
+        static uint32_t last_idrot = 0, idrot_period = 480000;
+        if (now - last_idrot > idrot_period) {
+            last_idrot = now;
+            idrot_period = 480000 + (esp_random() % 420001);   // 8-15 min
+            uint8_t nm[6]; esp_fill_random(nm, 6); nm[0] = (nm[0] & 0xFE) | 0x02;
+            esp_wifi_set_mac(WIFI_IF_STA, nm);
+            esp_fill_random(s_salt, RADAR_SALT_LEN);
+            ESP_LOGW(TAG, "link identity rotated");
+        }
+        static uint32_t last_sync = 0, sync_period = 120000;
+        if (now - last_sync > sync_period) {
+            last_sync = now;
+            sync_period = 120000 + (esp_random() % 60001);    // 2-3 min, re-drawn every fire
+            broadcast_library();
+        }
+        static uint32_t last_sig = 0, sig_period = 300000;
+        if (now - last_sig > sig_period) {                   // signature DB: was a fixed 60 s
+            last_sig = now;
+            sig_period = 300000 + (esp_random() % 120001);   // 5-7 min
+            broadcast_sig_db();
+        }
         static uint32_t last_save = 0;
         if (s_lib_dirty && now - last_save > LEARN_DB_SAVE_MS) {
             last_save = now; s_lib_dirty = false; learn_db_save();
@@ -1174,6 +1350,7 @@ void app_main(void)
                 .link_age_s = s_status_ms ? (now - s_status_ms) / 1000 : UINT32_MAX,
                 .build      = CYD_BUILD_TAG,
                 .page       = s_info_page,
+                .req_repeats = s_req_repeats,
             };
 #ifdef SIMULACRA_FLEET_PROVISION
             // The CONTROL page is static; re-rendering it every frame would re-flush the FLEET

@@ -48,6 +48,8 @@ void espnow_status_from_webui(radar_wire_status_t *out, const webui_status_t *in
 #include "sig_wire.h"
 #include "sig_store.h"
 #include "fleet.h"
+#include "ble_devices.h"   // ble_device_next_addr(): pre-drawn rotation targets for the broadcast
+#include "radar_retx.h"
 #include "config_wire.h"
 #include "detect.h"
 #include "sim_ctrl_key.h"
@@ -96,6 +98,8 @@ static bool cfg_floor_persist(void)
     return e == ESP_OK;               // are minutes apart, so flash wear is not a concern
 }
 #endif
+#define ESPNOW_ANSWER_MIN_MS 2000u   // floor between STATUS answers; Vigil polls every 3-5 s
+static uint32_t s_last_answer_ms;
 static bool s_answer;   // a REQUEST was seen this drain; answered once after it, so a burst of
                         // retransmits (the Vigil sends 3x) produces one reply, not three
 
@@ -285,7 +289,13 @@ static void handle_frame(const uint8_t *data, int len, const uint8_t src[6])
         for (int i = 0; i < 4; i++) nonce12[RADAR_SALT_LEN + i] = (uint8_t)(ctr >> (24 - 8 * i));
         config_cmd_t cmd;
         if (config_wire_open_signed(pl, plen, nonce12, SIMULACRA_CTRL_PK, &cmd) != 0) return;  // bad sig
-        if (cmd.version != CONFIG_WIRE_VER) return;
+        if (cmd.version != CONFIG_WIRE_VER) {
+            // Loud, not silent: a mismatch means a mixed-firmware fleet, and the preset ordinals
+            // shifted in v2 -- applying it anyway would run the WRONG preset under a valid signature.
+            ESP_LOGW(ETAG, "config: wire v%u rejected (need v%u) -- reflash the whole fleet",
+                     (unsigned)cmd.version, (unsigned)CONFIG_WIRE_VER);
+            return;
+        }
         // Signature verified FIRST, then the reboot-proof monotonic gate: the signature covers
         // salt||counter, i.e. exactly the material a replayer resends, so it proves authorship but
         // never freshness. Advancing the floor only on signed frames stops an unsigned flood from
@@ -303,9 +313,10 @@ static void handle_frame(const uint8_t *data, int len, const uint8_t src[6])
         }
         // Queued, not applied: presets resize the BLE population and clear_threats memsets the
         // detector table, and coexist_task is the single writer of both.
-        coexist_request_preset(cmd.preset_id);
-        ESP_LOGW(ETAG, "config: queued %s",
-                 cmd.preset_id == CONFIG_CLEAR_THREATS ? "CLEAR THREATS" : "preset");
+        coexist_request_preset(cmd.preset_id, cmd.cap);
+        ESP_LOGW(ETAG, "config: queued %s (cap %u)",
+                 cmd.preset_id == CONFIG_CLEAR_THREATS ? "CLEAR THREATS" : "preset",
+                 (unsigned)cmd.cap);
         return;
     }
 #endif
@@ -337,28 +348,179 @@ static void espnow_drain_rx(void)
     }
 }
 
-// Broadcast our current active synthetic MACs so fleet-mates can self-exclude us from their
-// model / learn / detect. AES-GCM authenticated (only fleet PSK holders can read/emit it).
-static void broadcast_fleet_macs(void)
+// STATUS retransmits, spread rather than blasted back-to-back. Fixed 2x (down from 3x): a decoy
+// has no delivery feedback -- broadcast is unacknowledged and it never hears the Vigil's view -- so
+// adapting the count here would be guesswork. The Vigil's own re-request covers a lost STATUS
+// within one poll cycle.
+#ifndef ESPNOW_IDROT_MIN_MS
+#define ESPNOW_IDROT_MIN_MS  480000u   // 8 min
+#endif
+#ifndef ESPNOW_IDROT_SPAN_MS
+#define ESPNOW_IDROT_SPAN_MS 420000u   // .. up to 15 min, at the ADDR_MAX_ONAIR_MS ceiling
+#endif
+
+static radar_retx_t s_status_retx;
+
+// Rotate this node's ESP-NOW LINK IDENTITY: source MAC and wire salt, together.
+//
+// Both were drawn ONCE at startup and never again, which made each board carry a stable identifier
+// for its entire powered life -- hours or days. Every other identifier in the project is capped at
+// ADDR_MAX_ONAIR_MS (15 min); these two were orders of magnitude longer, and they sit on the one
+// channel whose emission rate already isolates the fleet.
+//
+// THEY MUST ROTATE TOGETHER. The salt is the first 8 bytes of every frame, in cleartext (the nonce
+// is salt||counter). Rotating only the MAC would achieve nothing at all -- an observer simply
+// follows the salt instead, and vice versa. Two halves of one identity.
+//
+// Cost, accepted: a peer keys its replay window on the sender's salt, so each rotation opens a
+// fresh one. RADAR_REPLAY_PEERS is raised alongside this so a peer's high-water history spans
+// several rotations rather than being churned out by them.
+//
+// The counter deliberately does NOT reset. Nonce uniqueness needs (salt, counter) to be unique and
+// a fresh salt guarantees that on its own; resetting would also break the Vigil's monotonic CONFIG
+// floor, which is counter-only and salt-independent.
+static void espnow_rotate_link_identity(void)
 {
-    uint8_t macs[FLEET_BCAST_MACS_MAX][6]; size_t n = 0;
-    for (size_t s = 0; s < churn_active_count() && n < FLEET_BCAST_MACS_MAX; s++) {
-        const identity_t *id = churn_active_at(s);
-        if (id) memcpy(macs[n++], id->addr, 6);
-    }
-    for (int i = 0; i < probe_agents_count() && n < FLEET_BCAST_MACS_MAX; i++) {
-        const probe_agent_t *a = probe_agents_at(i);
-        if (a) memcpy(macs[n++], a->mac, 6);        // Wi-Fi probe MACs -> peers exclude them from density
-    }
+    uint8_t mac[6];
+    esp_fill_random(mac, 6);
+    mac[0] = (mac[0] & 0xFE) | 0x02;                 // locally administered, unicast
+    esp_wifi_set_mac(WIFI_IF_STA, mac);              // best-effort; verified LAA on air by espnow_sniff
+    esp_fill_random(s_salt, sizeof s_salt);
+    ESP_LOGW(ETAG, "link identity rotated (mac %02x:%02x:.. salt refreshed)", mac[0], mac[1]);
+}
+
+// One sealed FLEET_MACS frame. Split out so the broadcast can chunk (see below).
+static void fleet_macs_send_chunk(const uint8_t (*macs)[6], size_t n)
+{
     if (n == 0) return;
     const uint8_t *k = fleet_key_get(); if (!k) return;
     uint8_t pl[RADAR_FRAME_MAX]; size_t plen = fleet_macs_pack(pl, sizeof pl, macs, n);
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
     if (radar_wire_seal(frame, &flen, RADAR_TYPE_FLEET_MACS, pl, plen,
-                        k, s_salt, ++s_counter) == 0) {
+                        k, s_salt, ++s_counter) == 0)
         esp_now_send(BCAST, frame, flen);
-        ESP_LOGW(ETAG, "fleet: broadcast %u macs", (unsigned)n);
+}
+
+// Broadcast our current active synthetic MACs so fleet-mates can self-exclude us from their
+// model / learn / detect. AES-GCM authenticated (only fleet PSK holders can read/emit it).
+//
+// CHUNKED, because one frame cannot carry a full board's identities. FLEET_BCAST_MACS_MAX (32) is
+// a hard consequence of the 250-byte ESP-NOW frame, not a tunable. Since boards became additive
+// (2026-08-24) a single decoy runs up to BLE_DEVICES_MAX + PROBE_AGENTS_MAX = 48 identities, so the
+// old single-frame version silently TRUNCATED at 32 and never advertised the rest. Worse, BLE was
+// packed first, so a full BLE crowd consumed all 32 slots and ZERO probe MACs were ever broadcast --
+// the Wi-Fi density estimate had no fleet exclusion at all.
+//
+// The cost of truncation is a positive feedback loop: an unadvertised fleetmate MAC is counted as a
+// real ambient device -> pop_ewma inflates -> AUTO grows the crowd -> more unadvertised MACs. On the
+// bench this saturated every board at its ceiling within an hour, and because rf_model persists to
+// NVS the inflated estimate survived reboots.
+//
+// No wire-format change is needed. Exclusion is additive with a TTL (fleet_note_peer_macs is
+// refresh-or-insert), so each chunk is independently useful and the receiver needs no reassembly --
+// unlike the sig-sync path, which must have every chunk before it can adopt.
+//
+// ---------------------------------------------------------------------------------------------
+// DELTA + PACED (2026-08-26). Sending the whole table every 20-30 s made this the loudest thing
+// the board does, and the 2026-08-25 Kismet capture showed why that matters more than its content:
+//
+//   fleet transmitters     :   5   action frames 19714   (99.4/min)
+//   all other transmitters : 206   action frames    29   ( 0.1/min)
+//   non-fleet devices emitting ANY action frame: 3 of 206
+//
+// Each board emitted ~25 vendor action frames/min where the loudest real device in a 206-device
+// environment managed 0.07/min and the median managed none. The FLEET_MACS broadcast was 88% of
+// that. Frame-length bucketing and retransmit jitter hide what the frames SAY; they cannot hide
+// that they exist, and an adversary needs no key to count them. Two changes here:
+//
+//  1. Send only what CHANGED. Identities are stable between sweeps - rotation is 10-15 min while
+//     sweeps are ~1 min - so a delta typically carries a handful of MACs instead of the whole
+//     table. A periodic full resync repairs any drift and refreshes peer TTLs, which is why
+//     FLEET_MAC_TTL_MS had to be raised to cover the resync period (see fleet.h).
+//  2. PACE the chunks. The old loop emitted every chunk back-to-back with no delay, producing a
+//     fixed ~20 ms cadence that is itself machine-timed and distinctive. Chunks are now queued and
+//     released one at a time on a jittered interval by the task loop.
+//
+// This is a REDUCTION, not a fix. Any sustained vendor-action-frame rate is anomalous where 203 of
+// 206 devices emit exactly zero. Physically wiring the boards is the only measure that removes the
+// tell rather than shrinking it.
+// ---------------------------------------------------------------------------------------------
+
+// Every identity this board currently advertises: live BLE addrs, their pre-drawn next addrs, and
+// Wi-Fi probe-agent MACs.
+#define FLEET_IDENT_MAX (2 * BLE_DEVICES_MAX + PROBE_AGENTS_MAX)
+
+static uint8_t  s_sent[FLEET_IDENT_MAX][6];   // what peers have already been told about
+static size_t   s_sent_n;
+static uint8_t  s_pend[FLEET_IDENT_MAX][6];   // queued for release, drained a chunk at a time
+static size_t   s_pend_n, s_pend_i;
+static uint32_t s_next_chunk_ms;
+
+// Gather the current identity set. Returns the count written to `out`.
+static size_t collect_identities(uint8_t (*out)[6], size_t max)
+{
+    size_t n = 0;
+    for (size_t s = 0; s < churn_active_count() && n < max; s++) {
+        const identity_t *id = churn_active_at(s);
+        if (id) memcpy(out[n++], id->addr, 6);
     }
+    // The PRE-DRAWN NEXT address, so peers hold it before it goes on air. Without this a freshly
+    // rotated fleetmate address is unexcluded for up to one broadcast interval, and in that window
+    // peers both count it as a real ambient device (the population feedback measured on
+    // 2026-08-25) and match it against the tracker signature DB.
+    for (int i = 0; i < ble_devices_count() && n < max; i++) {
+        const uint8_t *na = ble_device_next_addr(i);
+        if (na) memcpy(out[n++], na, 6);        // NULL for static: never rotates
+    }
+    for (int i = 0; i < probe_agents_count() && n < max; i++) {
+        const probe_agent_t *a = probe_agents_at(i);
+        if (a) memcpy(out[n++], a->mac, 6);     // peers exclude these from Wi-Fi density
+    }
+    return n;
+}
+
+static bool mac_in(const uint8_t (*set)[6], size_t n, const uint8_t mac[6])
+{
+    for (size_t i = 0; i < n; i++) if (memcmp(set[i], mac, 6) == 0) return true;
+    return false;
+}
+
+// Queue this sweep's MACs for paced release. `full` sends everything (resync); otherwise only
+// identities peers have not already been told about.
+static void broadcast_fleet_macs(bool full)
+{
+    uint8_t cur[FLEET_IDENT_MAX][6];
+    size_t n = collect_identities(cur, FLEET_IDENT_MAX);
+
+    // Anything still queued from the previous sweep is superseded: a resync covers it, and a delta
+    // recomputes against s_sent, which the unsent entries were never added to.
+    s_pend_n = s_pend_i = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (full || !mac_in(s_sent, s_sent_n, cur[i]))
+            memcpy(s_pend[s_pend_n++], cur[i], 6);
+    }
+    // The sent-set becomes exactly the live set, so retired MACs stop being tracked and a MAC that
+    // reappears is re-sent. Bounded by construction: it is a copy of the live identity set.
+    memcpy(s_sent, cur, n * 6);
+    s_sent_n = n;
+
+    if (s_pend_n)
+        ESP_LOGW(ETAG, "fleet: queued %u macs (%s) of %u live",
+                 (unsigned)s_pend_n, full ? "resync" : "delta", (unsigned)n);
+}
+
+// Release at most one chunk per call, on a jittered interval. Called from the task loop.
+static void fleet_macs_pump(uint32_t now_ms)
+{
+    if (s_pend_i >= s_pend_n) return;
+    if ((int32_t)(now_ms - s_next_chunk_ms) < 0) return;
+    size_t n = s_pend_n - s_pend_i;
+    if (n > FLEET_BCAST_MACS_MAX) n = FLEET_BCAST_MACS_MAX;
+    fleet_macs_send_chunk(&s_pend[s_pend_i], n);
+    s_pend_i += n;
+    // Wide, jittered spacing. The old back-to-back loop produced a fixed ~20 ms cadence; this
+    // spreads a multi-chunk resync across several seconds and never repeats an interval.
+    s_next_chunk_ms = now_ms + 250u + (esp_random() % 1000u);
 }
 
 static void respond_once(void)
@@ -370,8 +532,9 @@ static void respond_once(void)
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen;
     if (radar_wire_seal(frame, &flen, RADAR_TYPE_STATUS, (uint8_t*)&r, sizeof r,
                         k, s_salt, ++s_counter) != 0) return;
-    for (int i = 0; i < 3; i++) esp_now_send(BCAST, frame, flen);   // 3x back-to-back
-    ESP_LOGW(ETAG, "answered request (%u B x3)", (unsigned)flen);
+    radar_retx_arm(&s_status_retx, frame, flen, 2,
+                   (uint32_t)(esp_timer_get_time() / 1000));
+    ESP_LOGW(ETAG, "answered request (%u B x2, spread)", (unsigned)flen);
 }
 
 static void offer_library(void)
@@ -399,19 +562,77 @@ static void offer_library(void)
 static void espnow_task(void *arg)
 {
     (void)arg;
-    uint32_t last_offer = 0, last_fleet = 0;
+    // Jittered periods, re-drawn on every fire. Fixed 25 s / 30 s timers made this node's ESP-NOW
+    // housekeeping a metronome: a listener who cannot read a single sealed byte could still lock
+    // onto the cadence and count the fleet.
+    //
+    // FLEET_MACS now runs at two rates. The DELTA sweep only needs to beat rotation, which is
+    // 10-15 min away and pre-drawn besides, so 45-75 s is ample and costs ~1 frame. The RESYNC
+    // sweep repairs drift and refreshes peer TTLs, so it must stay well inside FLEET_MAC_TTL_MS
+    // (12 min) -- 3-4 min keeps the same 3x margin the old 20-30 s had against 90 s.
+    uint32_t last_offer = 0, last_fleet = 0, last_resync = 0, last_idrot = 0;
+    uint32_t offer_period  = 25000 + esp_random() % 10001;   // 25-35 s
+    uint32_t fleet_period  = 45000 + esp_random() % 30001;   // 45-75 s  (delta)
+    uint32_t resync_period = 180000 + esp_random() % 60001;  // 3-4 min  (full, TTL 12 min)
+    // Link identity (MAC + salt) on the same ceiling as every other identifier the project emits.
+    // Overridable so the rotation can actually be OBSERVED on air in a short bench run instead of
+    // waiting 15 minutes per sample; the shipped value is the real one.
+    uint32_t idrot_period  = ESPNOW_IDROT_MIN_MS + esp_random() % (ESPNOW_IDROT_SPAN_MS + 1);
     for (;;) {
         if (!fleet_key_have()) {         // seek-enrollment: can't seal; wait for a signed OFFER
             espnow_drain_rx();           // MUST still drain: the OFFER that keys us arrives here
             s_answer = false;            // ignore telemetry requests until keyed
+            // Nothing we queued could be sealed, and peers keyed to a previous epoch cannot have
+            // read anything either. Drop the delta baseline so the first sweep after enrolment
+            // sends the FULL set rather than a delta against a state no peer shares.
+            s_sent_n = s_pend_n = s_pend_i = 0;
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
         espnow_drain_rx();               // all frame processing happens here, off the driver task
-        if (s_answer) { s_answer = false; respond_once(); }
+        {   // Spread STATUS repeats. The 50 ms task tick is comfortably finer than the 40-120 ms
+            // gaps, so no extra timer is needed.
+            uint32_t rnow = (uint32_t)(esp_timer_get_time() / 1000);
+            if (radar_retx_due(&s_status_retx, rnow, esp_random()))
+                esp_now_send(BCAST, s_status_retx.frame, s_status_retx.len);
+        }
+        // Minimum spacing between STATUS answers, independent of how many REQUESTs arrive.
+        // Defence in depth behind the per-salt replay table: even if an attacker cycled enough
+        // distinct captured salts to evict an entry, a replayed REQUEST can extract at most one
+        // answer per window rather than an unbounded stream. The Vigil polls every 3-5 s, so a 2 s
+        // floor never delays a legitimate request.
+        if (s_answer) {
+            s_answer = false;
+            uint32_t rn = (uint32_t)(esp_timer_get_time() / 1000);
+            if ((uint32_t)(rn - s_last_answer_ms) >= ESPNOW_ANSWER_MIN_MS || s_last_answer_ms == 0) {
+                s_last_answer_ms = rn;
+                respond_once();
+            }
+        }
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-        if (now - last_offer > 30000) { last_offer = now; offer_library(); }   // every 30 s
-        if (now - last_fleet > 25000) { last_fleet = now; broadcast_fleet_macs(); }   // every 25 s
+        if (now - last_offer > offer_period) {
+            last_offer = now; offer_period = 25000 + esp_random() % 10001;
+            offer_library();
+        }
+        // Resync takes precedence: it supersedes a delta due in the same tick, so the two never
+        // both queue and the delta's work is not wasted.
+        if (now - last_resync > resync_period) {
+            last_resync = now; last_fleet = now;
+            resync_period = 180000 + esp_random() % 60001;
+            fleet_period  = 45000 + esp_random() % 30001;
+            broadcast_fleet_macs(true);
+        } else if (now - last_fleet > fleet_period) {
+            last_fleet = now; fleet_period = 45000 + esp_random() % 30001;
+            broadcast_fleet_macs(false);
+        }
+        fleet_macs_pump(now);        // release at most one queued chunk, on a jittered interval
+        // Rotate the link identity LAST in the tick, so nothing queued this pass is half-sent under
+        // the old MAC and half under the new one.
+        if (now - last_idrot > idrot_period) {
+            last_idrot = now;
+            idrot_period = ESPNOW_IDROT_MIN_MS + esp_random() % (ESPNOW_IDROT_SPAN_MS + 1);
+            espnow_rotate_link_identity();
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

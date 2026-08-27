@@ -56,7 +56,7 @@ void fleet_note_peer_node(const uint8_t mac[6], uint32_t now_ms)
     for (int j = 0; j < FLEET_NODE_CAP; j++) {
         if (!s_nodes[j].used) { slot = j; break; }
         uint32_t age = now_ms - s_nodes[j].last_ms;
-        if (age >= FLEET_MAC_TTL_MS) { slot = j; break; }
+        if (age >= FLEET_NODE_TTL_MS) { slot = j; break; }
         if (age > oldest) { oldest = age; oldest_i = j; }
     }
     if (slot < 0) slot = oldest_i;
@@ -68,7 +68,7 @@ size_t fleet_node_count(uint32_t now_ms)
 {
     size_t n = 0;
     for (int i = 0; i < FLEET_NODE_CAP; i++)
-        if (s_nodes[i].used && (uint32_t)(now_ms - s_nodes[i].last_ms) < FLEET_MAC_TTL_MS) n++;
+        if (s_nodes[i].used && (uint32_t)(now_ms - s_nodes[i].last_ms) < FLEET_NODE_TTL_MS) n++;
     return n;
 }
 

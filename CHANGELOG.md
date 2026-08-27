@@ -3,6 +3,62 @@
 Newest first. Forward-looking milestones live in [`docs/ROADMAP.md`](docs/ROADMAP.md). The README's
 own "Recent updates" section keeps only the latest few entries - this is the full history.
 
+- **No persistent identifiers, anywhere.** A slice of the crowd used to hold one static address for
+  4-12 h, added so the fleet would reproduce the long presence tail real environments have. That
+  inverted the point: a decoy holding one address for hours, on a board carried by the operator, is
+  a *better* tracking handle than the phone it covers, since phones rotate their RPA every ~15 min.
+  The hole was wider than that band - STATIC addresses never rotate, so a static device's address
+  was on air for its entire life, and static is 75% of the crowd. `ADDR_MAX_ONAIR_MS` (15 min) is
+  now a hard ceiling across **both radios**, honoured by static devices dying and being reborn as
+  wholly new devices rather than by rotating. Verified over a 6 h simulated run: 1252 completed
+  spans, max 15.0 min, none over. The cost is accepted knowingly - the fleet no longer reproduces
+  that presence tail, and `presence_duration` is now the worst audit axis.
+- **AD structure is learned, not hardcoded.** The last generation axis the model could not express.
+  `pick_no_mfg_template()` had been fitted to a single 2026-07-05 capture in which flags-only
+  advertisers were 52.7% of devices; the same share measures 6.7% and 0.0% elsewhere. Structure now
+  samples `rf_model` exactly as intervals and vendors already do, via two histograms (no-mfg shape,
+  and mfg-bearing shape). Cross-validated `ad_structure` spread **[0.153-0.925] -> [0.088-0.381]**;
+  worst-case headline **0.925 -> 0.448**.
+- **Never emit a tracker signature.** Decoys could match this project's own detector three ways: the
+  `tile` template advertised service UUID 0xFEED verbatim; the Apple manufacturer path could roll
+  Find My's 0x12 subtype by chance (3 in 768); and the learn loop could adopt a real AirTag or Tile
+  in the room and clone it. Nearby phones running tracker detection would have told their owners an
+  unknown tracker was travelling with them - the exact harm this project exists to oppose. All three
+  closed, with a fail-closed Law-3 gate on template output that immediately caught a fourth (a
+  Microsoft template, forbidden as Swift Pair). 0xFD6F (COVID Exposure Notification) and 0xFD5A
+  (SmartTag) removed from the service-UUID pool.
+- **Wi-Fi probe archetypes rebuilt from capture.** The shipped IE layouts were modelled from
+  documentation, and a census of 877 real probing devices found **none of the eight present even
+  once** - every probe the fleet emitted carried a structure existing nowhere in ambient, which
+  classifies the fleet regardless of how well the source MAC is randomised. Replaced with real
+  captured structures (8 of 8 now match, covering 52.2% of that crowd), including two 2.4-GHz-only
+  archetypes, because devices without a 5 GHz radio exist and an invented table has none.
+- **ESP-NOW link went quiet.** Measured from outside, the fleet emitted ~99 vendor action frames/min
+  where 203 of 206 ambient devices emit exactly zero. The Vigil, not the decoys, was the loudest
+  thing in the system: it rebroadcast its entire learned library every 20 s on a fixed period. Now a
+  delta sync on a jittered cadence, with `FLEET_MACS` also delta-based and its chunks paced.
+  Measured **66.9/min -> 4.2/min** total; library sync **65.9 -> 2.4**.
+- **Replay-driven presence oracle closed.** Capturing a sealed frame needs no key, and the replay
+  window reset on any salt change - so alternating captures from two sender boots made every decoy
+  in range answer with a STATUS. Replay state is now a high-water counter per salt, which keeps
+  multi-Vigil operation working where a global monotonic floor would have broken it.
+- **Named-probe rate matched to measurement.** 21% of real devices ever name a network and those
+  that do name almost every time, looking for exactly one; the fleet had 62% of personas naming 60%
+  of the time with up to three saved networks each - the middle of a distribution that is actually
+  bimodal. SSID pool widened 22 -> 38 entries, from general knowledge of router defaults rather than
+  from captures: a census found 145 distinct probed SSIDs of which exactly one was probed by 8+
+  independent devices, and that one was a local business. Real probed SSIDs are people's networks.
+- **Additive fleet population + AUTO/MANUAL modes.** Decoys used to run `1/K` of one fleet-wide
+  crowd, so adding a board redistributed cover instead of adding it. That division was introduced to
+  fix a real measured problem (three boards once put 88 synthetic devices into a room holding 4-9
+  real ones), but it was justified partly on spatial diversity the boards never get in practice -
+  they travel together in one bag. Each board now sizes its own crowd from the ambient density it
+  measures, and boards add up. The preset ladder is replaced by two orthogonal modes: **AUTO**
+  tracks the room and honours an operator-set cap; **MANUAL** LOW/MED/HIGH pins a fixed fraction of
+  each board's capacity. This also retires the STEALTH/NORMAL pair, which resolved to identical
+  settings on the C5 and could not be told apart on the console. CONFIG wire goes to v2 (the preset
+  ordinals changed meaning, so a mixed-firmware fleet now fails loudly instead of silently applying
+  the wrong preset) - **flash every board together.** Hardware-verified on the 3-node fleet.
 - **Project wiki.** A full [CYD console guide + reference](https://github.com/Em3ritus/simulacra/wiki)
   (every screen, setting, preset, and status word explained) and a project-wide glossary, published
   and linked from the README.

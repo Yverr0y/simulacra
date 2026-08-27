@@ -1,0 +1,4 @@
+# r-he @ ch36 5 GHz -- IE structure derived from a real
+# capture (2026-08-26 census of 877 probing devices), emitted by probe_dump with a
+# fixed synthetic SA of 02:11:22:33:44:55. Regenerate with make_fixtures.py.
+40000000ffffffffffff021122334455ffffffffffff0000000001088c129824b048606c2d1a6f001bff000000000000000000000000000000000000000000007f0b0000080400000040000020bf0c3270800ffeff0000feff0000ff1c23010808000080443002001d009f08000c00fefffeff391cc7711c07

@@ -55,13 +55,15 @@ if ($Rebuild -or -not (Test-Path $exe)) {
     Write-Host "[build] compiling synth_dump.exe ..." -ForegroundColor Cyan
     Push-Location $tool
     try {
-        cl /nologo /TC /O2 /D_CRT_SECURE_NO_WARNINGS /FIportab.h `
+        cl /nologo /TC /O2 /D_CRT_SECURE_NO_WARNINGS /DSIMULACRA_HOST_NO_NVS /FIportab.h `
            /Ihost_stubs /I..\..\main /I..\..\components\simulacra_radar `
            synth_dump.c ble_hs_adv.c roster_stub.c `
            ..\..\main\generate.c ..\..\main\templates.c ..\..\main\roster.c ..\..\main\ble_devices.c `
            ..\..\main\learn.c ..\..\components\simulacra_radar\law3.c ..\..\components\simulacra_radar\learn_wire.c `
            ..\..\main\uniq_id.c ..\..\main\phantom.c ..\..\main\probe_agents.c ..\..\main\ssid_pool.c ..\..\main\probe_frame.c `
            ..\..\main\fleet_pop.c ..\..\main\fleet.c `
+           ..\..\main\rf_model.c ..\..\main\sig_store.c ..\..\components\simulacra_radar\sig_match.c ..\..\components\simulacra_radar\sig_seed.c `
+           ..\..\components\simulacra_radar\radar_pad.c ..\..\components\simulacra_radar\radar_retx.c `
            /Fe:synth_dump.exe | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "build failed"; exit 3 }
     } finally { Pop-Location }
@@ -91,7 +93,7 @@ $rc = $LASTEXITCODE
 
 # --- persona-active address-type reality (M10 personas tilt the BLE mix toward RPA) ---
 Write-Host "[persona] address-type mix with personas active ..." -ForegroundColor Cyan
-$ppop = & $exe --persona-pop $Seed 16 24 4000 1000
+$ppop = & $exe --persona-pop $Seed 16 24 4000 1000 $modelSeed
 if ($LASTEXITCODE -eq 0) {
     $ppopFile = Join-Path $OutDir "persona_pop.ndjson"
     Set-Content -Path $ppopFile -Value $ppop -Encoding ascii

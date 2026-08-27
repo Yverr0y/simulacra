@@ -88,6 +88,10 @@ uint8_t ssid_n;                 // 0 = permanently wildcard-only (this persona h
 uint8_t ssid_idx[AGENT_SSID_MAX];
 ```
 
+> **SUPERSEDED 2026-08-26 — see "Revision: SSID sets are redrawn on MAC rotation" below.** The
+> paragraph that follows describes the original rule, kept for the record. Two things in it are no
+> longer true: the set is redrawn on every MAC rotation, and the calibration is `0.21`, not `0.62`.
+
 Assigned **once per persona life**, in `agent_spawn` and `probe_agent_sync` (the two identity-birth
 sites), NOT on intra-life MAC rotation — a real phone's saved-network list is a property of the
 *device/session*, not of a MAC rotation. With probability `~0.62` (the calibration target) a persona
@@ -143,14 +147,16 @@ passes it through.
   fixtures — this is the safety net for "wildcard path unchanged"). With a directed SSID, the emitted
   SSID element is `0x00,len,<bytes>` and the rest of the body matches the wildcard body from offset 2
   on; total length within `PROBE_FRAME_MAX`.
-- **`probe_agents` assignment:** over many spawns, ~62% of agents get `ssid_n > 0` (assert a band,
-  e.g. 0.5–0.75, not an exact fraction); assigned indices are valid and distinct; assignment is
-  stable across an intra-life MAC rotation (same `ssid_idx[]` before/after) and re-drawn on
-  reincarnation.
+- **`probe_agents` assignment:** over many spawns, ~21% of agents get `ssid_n > 0` (assert a band,
+  e.g. 0.14–0.29, not an exact fraction); assigned indices are valid and distinct; assignment is
+  **re-drawn on every MAC rotation** as well as on reincarnation. *(Revised 2026-08-26: this bullet
+  previously required the set to be stable across an intra-life MAC rotation, and the band was
+  0.5–0.75.)*
 - **End-to-end via `probe_behavior_scorecard.py`:** a new `probe_dump` mode dumps per-agent
   wildcard-vs-named burst behavior over a window; feed it through the existing `wildcard_fraction`
-  axis and confirm the modeled decoy wildcard fraction drops from 1.0 into the ~0.36–0.45 target
-  band. This is the headline verification the whole feature exists for.
+  axis and confirm the modeled decoy wildcard fraction drops from 1.0 into the target band
+  (~0.72–0.86 after the 2026-08-26 recalibration; originally ~0.36–0.45). This is the headline
+  verification the whole feature exists for.
 
 ## Scope check
 
@@ -167,3 +173,45 @@ draw mechanism is meaningless without it. One spec, three tightly-coupled files,
 - Sourcing SSIDs from observed traffic — explicitly forbidden (safety invariant #1), never in scope.
 - Tuning the pool to a *specific* capture's SSID distribution — the pool is generic-by-design; we
   match the wildcard *fraction*, not a particular location's network names.
+
+---
+
+## Revision: SSID sets are redrawn on MAC rotation (2026-08-26)
+
+The original spec assigned a persona's saved-network set **once per life** and deliberately carried
+it across intra-life MAC rotations, reasoning that a real phone's saved-network list belongs to the
+device, not to a MAC. That reasoning is sound as realism and was implemented and tested as specified.
+
+It is reversed here, under the project-wide rule that no identifier this project emits may survive a
+rotation. A saved-network set that outlives a MAC rotation *is* a persistent identifier, and a
+potent one: probing for the same set from two MACs is the standard way MAC randomisation gets
+defeated in the field. It sat in the same category as the long-lived static BLE band and
+`BLE_ROLE_PERSISTENT` — deliberate, documented, realism-motivated, and a tracking handle — and it
+goes the same way.
+
+**Why the realism cost is near zero, and why that does not generalise.** The property being given up
+— "a device keeps its saved networks across a rotation" — is observable *only* to someone who has
+already linked the two MACs, and the SSID set is precisely what performs that linking. Remove it and
+there is no vantage point from which the change can be seen. The tell erases itself. Most realism
+trades are not like this; this one is, which is what makes it cheap rather than merely worthwhile.
+
+**Residual, known and accepted.** Aggregate SSID-to-MAC multiplicity does remain observable without
+per-device attribution. A real crowd shows a given SSID probed by several distinct MACs over an
+hour; redrawing on every rotation pushes the fleet toward one MAC per SSID. The 38-entry pool blunts
+this — with far more personas than pool entries, collisions arise naturally — but does not remove
+it. If this axis is ever measured and found wanting, the fix is pool sizing, not restoring
+carry-over.
+
+**Calibration also changed** (independently of the above). `SSID_ASSIGN_PCT` moved 62 → 21,
+`SSID_BURST_NAMED_PCT` 60 → 78, and distinct names per naming device ~2 → ~1.05, all from a census
+of real probing devices. Real devices split sharply into "never names" and "names almost every
+burst", and a namer typically has exactly one network it is looking for; the original values
+modelled the middle of that distribution, a shape no real crowd exhibits. Aggregate directed share
+lands ~16.5% against a measured 27.1%, because real naming devices are also ~2x chattier overall
+(4.14 probes each vs 2.11). That is a burst-frequency knob, not an SSID knob, and is left alone
+rather than fudged by inflating one of the three measured parameters.
+
+**Tests changed:** `test_assignment_stable_across_mac_rotation` →
+`test_assignment_redrawn_on_mac_rotation` (asserts the inverse property);
+`test_assignment_fraction_near_calibration` and `test_decoy_wildcard_fraction_in_target_band` rebanded
+to the censused anchors.

@@ -41,6 +41,13 @@ int template_build(const device_template_t *t, uint8_t out_payload[31], uint8_t 
 // (for model-driven generation of vendors with no specific template). Returns 0 on success.
 int template_build_vendor_mfg(uint16_t company_id, uint8_t out_payload[31], uint8_t *out_len);
 
+// Reshape an already-serialized MFG-BEARING payload into one of the RF_MFGS_* variants.
+// Applied AFTER template_build so element order is exact: NimBLE's fixed field order would put
+// appearance before mfg ("01,19,ff") where real devices emit "01,ff,19", and the host audit's
+// serializer supports neither appearance nor tx-power at all. Caller draws the variant from the
+// learned mix (rf_mfgstruct_sample); this only applies it. Returns 0 on success.
+int template_apply_mfg_variant(uint8_t *payload, uint8_t *len, uint8_t variant);
+
 // Build a phone-plausible BLE advertisement for a cross-protocol persona. Law-3 safe by
 // construction: emits only flags-only, or flags + a 16-bit service-UUID LIST (no manufacturer
 // data, no service-data), so it can never trigger a Continuity / Fast-Pair pairing pop-up.

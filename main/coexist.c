@@ -89,23 +89,30 @@ static struct { uint32_t hash; int8_t last_rssi; uint32_t last_ms; bool used; }
 
 uint16_t coexist_current_epoch(void) { return s_epoch; }
 
-// Control-command inbox (see coexist.h). 0x100 = empty; the payload is a uint8 preset id, so the
-// sentinel sits outside the byte range and a single int carries both state and value.
+// Control-command inbox (see coexist.h). 0x100 = empty; preset id sits in bits 0-7 and the AUTO cap
+// in bits 16-23, so bit 8 is never set by a packed request and the sentinel stays unambiguous.
+// Both values ride ONE volatile int deliberately: a foreign task writes it and coexist_task reads
+// it, so packing keeps preset and cap from being torn apart across the two.
 #define COEX_NO_REQ 0x100
 static volatile int s_preset_req = COEX_NO_REQ;
 
-void coexist_request_preset(uint8_t preset_id) { s_preset_req = (int)preset_id; }
+void coexist_request_preset(uint8_t preset_id, uint8_t cap)
+{
+    s_preset_req = (int)preset_id | ((int)cap << 16);
+}
 
 static void coexist_drain_requests(void)
 {
     int req = s_preset_req;
     if (req == COEX_NO_REQ) return;
     s_preset_req = COEX_NO_REQ;
-    if (req == CONFIG_CLEAR_THREATS) {
+    uint8_t preset = (uint8_t)(req & 0xFF);
+    uint8_t cap    = (uint8_t)((req >> 16) & 0xFF);
+    if (preset == CONFIG_CLEAR_THREATS) {
         detect_clear_threats();
         ESP_LOGW(TAG, "control: threats cleared");
-    } else if (sim_settings_apply_preset((sim_preset_t)req) == 0) {
-        ESP_LOGW(TAG, "control: applied preset %d", req);
+    } else if (sim_settings_apply_preset_capped((sim_preset_t)preset, cap) == 0) {
+        ESP_LOGW(TAG, "control: applied preset %d (cap %u)", preset, (unsigned)cap);
     }
 }
 
@@ -317,20 +324,26 @@ static void coexist_reprofile_finish(const coexist_persona_t *p)
         ESP_LOGW(TAG, "epoch -> %u (drift=%.3f)", (unsigned)s_epoch, score);
     }
     roster_reseed(cur);                                     // fresh room-matched behaviour library
-    // Room density flexes the crowd, but never below what this node's designed persona count needs
-    // (personas are capped at half the crowd, so N personas require 2N devices). GEN_CEILING caps
-    // the density estimate at 8 on Shade / 16 on Ward, which on its own would shrink the crowd to
-    // the point where personas get squeezed out -- the phones we present are a design constant of
-    // the node, not a property of the room; it is the unbound beacons/tags that should flex.
-    // generate_active_target estimates the density of the WHOLE room; this node presents its 1/K
-    // share of it. The boot path already did this and the re-profile did not, so the crowd snapped
-    // back to a full standalone-sized population at the first re-profile.
-    uint8_t at = (uint8_t)fleet_pop_share(generate_active_target(cur));
-    uint8_t floor_n = sim_settings_floor();
-    if (at < floor_n) at = floor_n;
-    churn_set_active_target(at);                            // resize to the new population
-    ESP_LOGW(TAG, "reprofile: drift=%.3f active_target=%u (floor %u, fleet_k %d)",
-             score, (unsigned)at, (unsigned)floor_n, fleet_pop_size());
+    // Room density flexes the crowd, but in AUTO never below what this node's designed persona
+    // count needs (personas are capped at half the crowd, so N personas require 2N devices) -- the
+    // phones we present are a design constant of the node, not a property of the room; it is the
+    // unbound beacons/tags that should flex.
+    //
+    // No fleet divisor: each board sizes itself from its OWN measurement and boards are additive
+    // (2026-08-24). A MANUAL level is the operator's explicit choice and must survive this tick --
+    // without the auto_scale gate the re-profile would silently clobber it within 10 min on Ward.
+    if (sim_settings_auto_scale()) {
+        uint8_t at = generate_active_target(cur);
+        uint8_t floor_n = sim_settings_floor();
+        if (at < floor_n) at = floor_n;
+        uint8_t cap = sim_settings_auto_cap();
+        if (cap && at > cap) at = cap;
+        churn_set_active_target(at);                        // resize to the new population
+        ESP_LOGW(TAG, "reprofile: drift=%.3f active_target=%u (floor %u, cap %u)",
+                 score, (unsigned)at, (unsigned)floor_n, (unsigned)cap);
+    } else {
+        ESP_LOGW(TAG, "reprofile: drift=%.3f (manual mode, crowd unchanged)", score);
+    }
     if (prev.sweeps > 0) coexist_handle_drift(p, score);   // skip day-one false trigger (empty prev model)
 }
 
@@ -354,20 +367,10 @@ static void coexist_task(void *arg)
     const coexist_persona_t *p = coexist_persona();
     uint32_t now0 = (uint32_t)(esp_timer_get_time() / 1000);
     uint32_t last_wifi = now0, last_repro = now0;      // don't fire at the instant of boot
-    uint32_t hop24 = 0;
     for (;;) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-        fleet_pop_refresh(now);                         // live node census -> everyone's 1/K share
-        {   // A node joining or leaving changes everyone's share; resize now rather than waiting
-            // for the next re-profile (up to 10 min on Ward).
-            static int s_last_k = -1;
-            int k = fleet_pop_size();
-            if (k != s_last_k) {
-                if (s_last_k >= 0) ESP_LOGW(TAG, "fleet census %d -> %d nodes; resizing crowd", s_last_k, k);
-                s_last_k = k;
-                if (!s_turbo) sim_settings_recalc_bounds();   // turbo's bounds aren't K-relative
-            }
-        }
+        // The census-change resize hook that lived here is gone: population no longer depends on
+        // the node count, so a peer joining or leaving does not change this board's crowd size.
         coexist_drain_requests();                       // control commands land here, not on the
         churn_tick(now);                                // caller's task (single-writer discipline)
         if (s_turbo) {                                  // re-assert: a radio re-init (probe_pool_init
@@ -392,6 +395,17 @@ static void coexist_task(void *arg)
         }
         coexist_detect_led_tick(now);
         coexist_due_t d = coexist_due(p, now, &last_wifi, &last_repro);
+        // Break the metronome. coexist_due fires on an EXACT fixed period, so probe bursts appeared
+        // every 2.000 s on Ward / 7.000 s on Shade -- and the interval itself identifies the board
+        // model. Per-agent probe timing is already jittered (that was the whole point of the agent
+        // model), but the burst cadence carrying them was not, so a listener watching only WHEN
+        // clusters occur saw a clean periodic signal regardless.
+        //
+        // Nudge the just-stamped baseline FORWARD by a random fraction of the period, making the
+        // next interval period..1.5*period. One-sided on purpose: last_* are unsigned ms timestamps
+        // and moving them backwards risks an underflow that would fire every tick.
+        if (d.fire_wifi)      last_wifi  += esp_random() % (p->wifi_period_ms / 2 + 1);
+        if (d.fire_reprofile) last_repro += esp_random() % (p->reprofile_period_ms / 8 + 1);
         // s_wifi_allowed as well as s_wifi_ok: the setter's false path used to write a flag the
         // tick never read, so coexist_set_wifi_enabled(false) after start silently kept injecting.
         //
@@ -427,8 +441,27 @@ static void coexist_task(void *arg)
                                                   // holds ONE Wi-Fi MAC for its whole life while its
                                                   // BLE RPA rotates - the mismatch is the tell.
                                                   // probe_agents_lifecycle is standalone-only.
-            if (n24) probe_inject_burst(ch24[hop24++ % n24]);        // 2.4 GHz (coex-arbitrated)
-            if (p->use_5g && (++s_wifi_ctr % COEX_5G_EVERY == 0)) coexist_5g_excursion();
+            if (n24) {
+                // Shuffled sweep, not a fixed 1->6->11->1 cycle. Every channel is still visited
+                // once per pass (a real scanner covers the band), but the ORDER is re-randomized
+                // each pass, so the joint (period, channel) pattern stops being predictable.
+                static uint8_t order[16]; static uint8_t ord_n, ord_i;
+                if (ord_n != n24 || ord_i >= ord_n) {           // (re)build a permutation
+                    ord_n = (uint8_t)(n24 > sizeof order ? sizeof order : n24);
+                    for (uint8_t k = 0; k < ord_n; k++) order[k] = k;
+                    for (uint8_t k = ord_n; k > 1; k--) {       // Fisher-Yates
+                        uint8_t j = (uint8_t)(esp_random() % k);
+                        uint8_t t = order[k-1]; order[k-1] = order[j]; order[j] = t;
+                    }
+                    ord_i = 0;
+                }
+                probe_inject_burst(ch24[order[ord_i++]]);       // 2.4 GHz (coex-arbitrated)
+            }
+            // Jittered 5 GHz excursion: a fixed every-Nth-burst cadence is itself a pattern.
+            if (p->use_5g && (++s_wifi_ctr % COEX_5G_EVERY == 0)) {
+                coexist_5g_excursion();
+                s_wifi_ctr += esp_random() % COEX_5G_EVERY;     // shift the next excursion's phase
+            }
         }
         if (!s_wifi_ok || !s_wifi_allowed) {
             // No Wi-Fi means no probe requests. A persona is a phone presenting on both radios, so
@@ -446,12 +479,10 @@ static void coexist_task(void *arg)
             s_repro_active = false;
             coexist_reprofile_finish(p);                            // BLE population-match (may early-return)
             int wt      = s_wifi_obs_ok ? wifi_obs_target(now) : WIFI_OBS_FALLBACK;
-            int k       = fleet_pop_live_size(now);                 // live fleet size (peers heard + self)
-            int agents  = fleet_pop_share_k(wt, k);                 // this node's share of the crowd target
+            int agents  = wt;                                       // additive: no fleet divisor
             probe_agents_glide_set_target(agents, now);             // glide toward it (boot-instant first time)
-            // Log the APPLIED target + the divisor so the live census is observable (wt is pre-division).
-            ESP_LOGW(TAG, "wifi popmatch: density=%d wt=%d /nodes=%d -> agents=%d%s",
-                     s_wifi_obs_ok ? wifi_obs_density(now) : -1, wt, k, agents,
+            ESP_LOGW(TAG, "wifi popmatch: density=%d -> agents=%d%s",
+                     s_wifi_obs_ok ? wifi_obs_density(now) : -1, agents,
                      s_wifi_obs_ok ? "" : " (fallback)");
         }
         if (s_listen_ch >= 0 && s_wifi_ok && s_wifi_allowed && !observe_window_active())

@@ -181,9 +181,10 @@ static void draw_library(radar_gfx_t *g, const radar_lib_info_t *lib){
 // and by CTRL_LABELS' array position, same as every other preset here.
 #define CTRL_TURBO_PRESET 5
 static const char *CTRL_LABELS[RADAR_CTRL_PRESET_COUNT] =
-    { "PAUSE", "STEALTH", "NORMAL", "DENSE", "MAX", "TURBO" };
+    { "PAUSE", "AUTO", "LOW", "MED", "HIGH", "TURBO" };
 static const char *PRESET_DESC[RADAR_CTRL_PRESET_COUNT] =
-    { "freeze on-air", "min crowd", "balanced", "big crowd", "max crowd", "flood the zone" };
+    { "freeze on-air", "match the room", "quarter crowd", "half crowd", "full crowd",
+      "flood the zone" };
 static const char *ctrl_preset_name(uint8_t p){
     if (p < RADAR_CTRL_PRESET_COUNT)      return CTRL_LABELS[p];
     if (p == RADAR_CTRL_PRESET_COUNT)     return "CUSTOM";
@@ -300,11 +301,15 @@ static void draw_info(radar_gfx_t *g, const radar_wire_status_t *st,
     if (lib && lib->sd_ok) { snprintf(v,sizeof v,"OK %luMB",(unsigned long)lib->card_mb); row_kv(g,188,"card",v); }
     else                   row_kv(g,188,"card", lib ? "ABSENT" : "-");
     row_section(g, 206, "LINK");
-    if (sys && sys->link_age_s != UINT32_MAX) { snprintf(v,sizeof v,"%lus ago",(unsigned long)sys->link_age_s); row_kv(g,224,"last status",v); }
-    else                                       row_kv(g,224,"last status","never");
-    row_section(g, 242, "SYSTEM");
-    fmt_uptime(v,sizeof v,st->uptime_s);          row_kv(g,260,"uptime",v);
-    row_kv(g,276,"firmware", (sys && sys->build) ? sys->build : "cyd");
+    if (sys && sys->link_age_s != UINT32_MAX) { snprintf(v,sizeof v,"%lus ago",(unsigned long)sys->link_age_s); row_kv(g,222,"last status",v); }
+    else                                       row_kv(g,222,"last status","never");
+    // Live REQUEST redundancy. Relaxes toward 1x on a clean link, snaps to 4x on any missed node,
+    // so a value stuck high is the operator's cue that the link is lossy -- the reason an adaptive
+    // count has to be visible rather than silently absorbing a degrading environment.
+    if (sys) { snprintf(v,sizeof v,"%ux",(unsigned)sys->req_repeats); row_kv(g,236,"retry",v); }
+    row_section(g, 252, "SYSTEM");
+    fmt_uptime(v,sizeof v,st->uptime_s);          row_kv(g,268,"uptime",v);
+    row_kv(g,282,"firmware", (sys && sys->build) ? sys->build : "cyd");
     radar_gfx_text(g, 8, 298, "TAP: LEGEND", COL_ASH);
 }
 static void draw_exposure(radar_gfx_t *g, const exposure_t *e){

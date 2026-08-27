@@ -9,13 +9,41 @@
 // queried by observe.
 
 #ifndef FLEET_MAC_CAP
-#define FLEET_MAC_CAP 96          // peer synthetic MACs tracked (~2 peers x [16 BLE + 16 probe] + headroom)
+// Peer synthetic MACs tracked. A single additive board runs up to BLE_DEVICES_MAX (32) +
+// PROBE_AGENTS_MAX (16) = 48 identities, so this must hold 48 x (peers you expect to run).
+// 256 covers a 5-peer fleet outright and degrades gracefully past that (LRU eviction).
+//
+// Was 96, sized as "~2 peers x [16 BLE + 16 probe]" back when each board ran 1/K of one fleet-wide
+// crowd. Additive population (2026-08-24) made that a hard undersize: the table saturated, peer
+// MACs fell out of it, and unexcluded fleetmates were counted as real ambient devices -- inflating
+// the density estimate that AUTO sizes the crowd from. See broadcast_fleet_macs in esp_now_link.c
+// for the other half of the same bug.
+#define FLEET_MAC_CAP 256
 #endif
 #ifndef FLEET_BCAST_MACS_MAX
-#define FLEET_BCAST_MACS_MAX 32   // max MACs packed per FLEET_MACS broadcast (sealed <=250: 32*6+1=193 + 32 = 225)
+// Max MACs per FLEET_MACS frame (sealed <=250: 32*6+1=193 + 32 = 225). This is a HARD LIMIT of the
+// ESP-NOW frame size, not a tunable -- raising it overflows the frame. A board with more identities
+// than this sends multiple chunks; see broadcast_fleet_macs.
+#define FLEET_BCAST_MACS_MAX 32
 #endif
 #ifndef FLEET_MAC_TTL_MS
-#define FLEET_MAC_TTL_MS 90000u   // forget a peer MAC not re-heard within this (3x broadcast + margin)
+// Forget a peer synthetic MAC not re-heard within this.
+//
+// Raised from 90 s on 2026-08-26, when the broadcast became DELTA-based. Under the old
+// send-everything-every-25 s scheme a 90 s TTL gave 3 attempts of margin. Deltas only carry what
+// CHANGED, so an unchanged MAC is not re-sent and would expire mid-life at 90 s. The TTL must now
+// cover the FULL-RESYNC period instead, with the same 3x margin: resync runs every 3-4 min, so
+// 12 min holds. A stale exclusion is cheap - the MAC belongs to a departed peer and is no longer
+// on air, so excluding it costs nothing - whereas a PREMATURELY expired one is expensive: the
+// fleetmate gets counted as a real ambient device, which is the population feedback loop measured
+// on 2026-08-25 (32 -> 65 -> 33 -> 42 with ambient provably flat).
+#define FLEET_MAC_TTL_MS 720000u  // 12 min (>= 3x the full-resync period)
+#endif
+#ifndef FLEET_NODE_TTL_MS
+// Peer NODE liveness is a SEPARATE, much shorter TTL. It answers "who is here right now", which
+// must stay responsive: a board carried out of range should stop counting as present promptly.
+// Sharing FLEET_MAC_TTL_MS would have made a departed peer look live for 12 min.
+#define FLEET_NODE_TTL_MS 90000u  // 1.5 min
 #endif
 #ifndef FLEET_NODE_CAP
 #define FLEET_NODE_CAP 8          // distinct peer nodes tracked (real ESP-NOW hardware MACs, not synthetic)

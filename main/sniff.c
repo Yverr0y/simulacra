@@ -19,7 +19,22 @@ static const uint8_t CH[] = { 1, 6, 11 };
 
 // Per-frame SA+seq logging: verifies the injector's 802.11 sequence numbers are independent
 // per source MAC (not one shared hardware counter). 0 = counts only.
+//
+// *** THIS OUTPUT CONTAINS THIRD-PARTY PII. ***
+//
+// A probe request's source MAC belongs to a real nearby device -- a stranger's phone, a neighbour's
+// laptop. This build logs them verbatim, which is the point (you cannot verify sequence-number
+// independence from a hash) but it means the serial output is bystander data, not diagnostics.
+//
+// Do NOT paste this log into an issue, a commit message, a chat, or anywhere in this repo. The
+// project's rules already forbid committing real MACs and keep captures in private/; a serial log
+// is the same data in a form that looks harmless enough to paste. Treat it exactly like a capture
+// file: keep it local, and quote only aggregate counts from it.
+//
+// Set to 0 for count-only operation, which is PII-free and enough for most checks.
+#ifndef SNIFF_LOG_FRAMES
 #define SNIFF_LOG_FRAMES 1
+#endif
 
 static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
@@ -85,5 +100,13 @@ void sniff_start(void)
     ESP_LOGW(TAG, "wifi probe sniffer started (parked ch%d)", SNIFF_FIXED_CH);
 #else
     ESP_LOGW(TAG, "wifi probe sniffer started (2.4 GHz hop 1/6/11)");
+#endif
+#if SNIFF_LOG_FRAMES
+    // Warn at the point of use, not only in a source comment. The operator reading this log is the
+    // person who might paste it somewhere, and by then they are looking at the terminal, not the
+    // file that produced it.
+    ESP_LOGW(TAG, "*** per-frame logging ON: source MACs below belong to REAL nearby devices.");
+    ESP_LOGW(TAG, "*** This output is third-party PII. Do not paste it into issues/commits/chat.");
+    ESP_LOGW(TAG, "*** Build with -DSNIFF_LOG_FRAMES=0 for PII-free count-only operation.");
 #endif
 }

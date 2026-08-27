@@ -6,9 +6,22 @@
 // Rich HT/VHT/HE/ext-cap/vendor IE sets exceed 64 bytes; give ample headroom.
 #define PROBE_FRAME_MAX 256
 
-// Phone archetypes the injector models. Order must match ARCHS[] in probe_frame.c
-// and the arch index used by tools/probe_audit/probe_dump.c.
-typedef enum { ARCH_IPHONE, ARCH_GALAXY, ARCH_PIXEL, ARCH_ANDROID, PROBE_ARCH_COUNT } probe_arch_t;
+// Probe archetypes. Order must match ARCHS[] in probe_frame.c and the arch index used by
+// tools/probe_audit/probe_dump.c.
+//
+// Named for the IE STRUCTURE they carry, not for a phone model. The previous names (iphone/galaxy/
+// pixel/android) described tails MODELED from documentation, and a 2026-08-26 census found not one
+// of them present in a real crowd of 877 probing devices. These are real captured structures, so a
+// structural name is the honest one: a capture can tell you a layout exists and how common it is,
+// never which handset emitted it.
+typedef enum {
+    ARCH_R_VS,          // rates + vendor IE -- the commonest structure on air (14.3% of devices)
+    ARCH_R_EC15,        // rates + HT + ExtCap/15
+    ARCH_R_HE,          // rates + HT + ExtCap/11 + HE (+ VHT on 5 GHz)
+    ARCH_R_BARE,        // rates + ExtRates only, no HT.  2.4 GHz ONLY (no 5 GHz radio)
+    ARCH_R_HTONLY,      // non-basic CCK rates + HT.      2.4 GHz ONLY
+    PROBE_ARCH_COUNT
+} probe_arch_t;
 
 typedef struct {
     const char    *name;

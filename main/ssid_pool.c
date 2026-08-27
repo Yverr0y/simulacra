@@ -37,6 +37,37 @@ static const struct { const char *name; uint8_t weight; uint8_t sfx; } POOL[] = 
     // still-in-many-PNLs open hotspots, kept minimal (rare in the real capture)
     { "xfinitywifi",     5, SSID_SFX_NONE  },
     { "attwifi",         4, SSID_SFX_NONE  },
+    // --- widened 2026-08-26 -------------------------------------------------------------------
+    // 22 entries with published weights meant the fleet's AGGREGATE probe distribution converged on
+    // a shape readable straight out of this repo. Individually each name proves nothing; jointly,
+    // across a fleet, the distribution was the signature.
+    //
+    // These additions come from GENERAL KNOWLEDGE of ubiquitous router/ISP/device defaults, and
+    // deliberately NOT from the operator's captures. A census of a decoy-free capture found 145
+    // distinct probed SSIDs, of which exactly ONE was probed by 8 or more independent devices --
+    // and that one was a local business. Real probed SSIDs are personal or local networks, so a
+    // capture cannot source this list; the SAFETY rule at the top of this file already said so and
+    // the census confirmed it empirically. What the capture DID safely supply is the naming RATE,
+    // which is applied in probe_agents.c.
+    //
+    // Weights are low: these are the tail of the distribution, not the head. Every entry is a
+    // manufacturer/ISP default or a generic word -- nothing personal, observed, or local.
+    { "ASUS",            4, SSID_SFX_NONE  },
+    { "TP-Link_Guest",   4, SSID_SFX_NONE  },
+    { "Verizon_Fios",    4, SSID_SFX_NONE  },
+    { "Optimum",         3, SSID_SFX_NONE  },
+    { "CoxWiFi",         3, SSID_SFX_NONE  },
+    { "SpectrumWiFi",    3, SSID_SFX_NONE  },
+    { "NETGEAR-5G",      3, SSID_SFX_DIGIT },
+    { "Linksys_EXT",     3, SSID_SFX_HEX2  },
+    { "DIRECT-",         5, SSID_SFX_HEX4  },   // Wi-Fi Direct: printers, TVs, consoles
+    { "HP-Print",        3, SSID_SFX_HEX4  },
+    { "Chromecast",      3, SSID_SFX_HEX4  },
+    { "amazon-",         3, SSID_SFX_HEX4  },
+    { "SETUP",           3, SSID_SFX_HEX4  },
+    { "Guest-2.4",       3, SSID_SFX_NONE  },
+    { "wifi-guest",      3, SSID_SFX_NONE  },
+    { "Hotspot",         3, SSID_SFX_NONE  },
 };
 #define POOL_N ((int)(sizeof(POOL) / sizeof(POOL[0])))
 

@@ -141,27 +141,40 @@ static void simulacra_task(void *arg)
     // to the coordinator (it owns churn_tick + Wi-Fi bursts + re-profile). roster_init()
     // MUST precede churn_init(): churn pulls identities straight from the roster pool.
     roster_init();
-    int fleet_k = fleet_pop_size();                 // K nodes share the crowd (default 1 = standalone)
-    int ndev = fleet_pop_share(12);                 // fallback density -> this node's share
+    // No fleet divisor: this board sizes its crowd from its own ambient estimate and boards are
+    // additive (2026-08-24). Nothing here depends on how many peers are on the mesh.
+    int ndev = 12;                                  // fallback density until a model is loaded
     {
         rf_model_t m;
         if (rf_model_load_nvs(&m) == 0 && m.total_obs >= GEN_MIN_OBS) {
-            uint8_t at = (uint8_t)fleet_pop_share(generate_active_target(&m));  // node's share of observed density
+            uint8_t at = generate_active_target(&m);            // this board's own ambient estimate
             churn_set_active_target(at);
             ndev = (int)at;
-            ESP_LOGW(TAG, "population-match: pop=%u fleet_k=%d active_target=%u",
-                     (unsigned)(m.pop_ewma + 0.5f), fleet_k, (unsigned)at);
+            ESP_LOGW(TAG, "population-match: pop=%u active_target=%u",
+                     (unsigned)(m.pop_ewma + 0.5f), (unsigned)at);
         }
     }
-    int ble_floor = fleet_pop_share(probe_desired_ble_floor());   // floor scales with the persona share
-    if (ndev < ble_floor) ndev = ble_floor;                      // room for this node's personas + twins
-    if (ndev < (int)sim_settings_floor()) ndev = sim_settings_floor();   // and for the persona cap
+    // Floor on the MINIMUM viable persona count, not the designed one. Flooring at
+    // probe_desired_ble_floor() here pinned the C5 to its full 32 at every boot regardless of what
+    // the room looked like, which is how a bench fleet came to radiate 88 decoys into a room
+    // holding 4-9 real devices. Room-matching has to be allowed to shrink the crowd.
+    if (ndev < (int)sim_settings_floor()) ndev = sim_settings_floor();
     ble_devices_init(ndev, (uint32_t)(esp_timer_get_time() / 1000));  // population size; clamped to max
+    // Bound personas draw TX power from the SAME learned shape the unbound crowd uses. Giving the
+    // two halves of one on-air crowd separate distributions widened the combined spread past
+    // ambient's and scored worse than either half alone.
+    ble_devices_set_model(observe_model());
     // Create the persona registry HERE, on simulacra_task, BEFORE coexist_start spawns coexist_task
     // (task creation is a memory barrier). All phantom_lifecycle/sync_* thereafter run only on the
     // coexist tick, so the phantom state has a single writer -> no lock needed. Binding is deferred
     // to the first coexist tick (phantom_sync_wifi/ble), after probe_agents_init / ble_devices_init.
-    phantom_init(fleet_pop_share(probe_phone_target()), (uint32_t)(esp_timer_get_time() / 1000));
+    // Personas must fit the crowd we just sized: they are capped at half the population (the
+    // anti-monoculture rule), so a sparse-room crowd hosts proportionally fewer. The coexist tick
+    // re-derives this every pass; this is just the boot-instant value.
+    int nph = probe_phone_target();
+    if (nph > ndev / 2) nph = ndev / 2;
+    if (nph < 1) nph = 1;
+    phantom_init(nph, (uint32_t)(esp_timer_get_time() / 1000));
     churn_set_apply(churn_adv_apply);
     churn_init((uint32_t)(esp_timer_get_time() / 1000));
     sim_settings_init();   // restore persisted churn tunables (or firmware defaults)

@@ -29,11 +29,14 @@ def pool_count():
 @unittest.skipUnless(os.path.exists(EXE), "probe_dump not built")
 class SsidAssign(unittest.TestCase):
     def test_assignment_fraction_near_calibration(self):
-        # Pool many agents across seeds; ~62% should have ssid_n>0.
+        # Pool many agents across seeds; ~21% should have ssid_n>0 (SSID_ASSIGN_PCT).
+        # Recalibrated 2026-08-26 from 62% to the censused 21.2% of real devices that ever name a
+        # network. Real crowds split sharply into "never names" and "names almost every burst";
+        # 62% modelled the middle of that distribution, a shape no real crowd exhibits.
         rows = [r for s in range(1, 9) for r in burst(s)]
         frac = sum(1 for _, ssid_n, _ in rows if ssid_n > 0) / len(rows)
-        self.assertGreater(frac, 0.50, f"assigned fraction {frac:.2f} too low")
-        self.assertLess(frac, 0.75, f"assigned fraction {frac:.2f} too high")
+        self.assertGreater(frac, 0.14, f"assigned fraction {frac:.2f} too low")
+        self.assertLess(frac, 0.29, f"assigned fraction {frac:.2f} too high")
 
     def test_assigned_count_bounded(self):
         for _, ssid_n, _ in burst(2):
@@ -61,15 +64,47 @@ class SsidAssign(unittest.TestCase):
         self.assertTrue(assigned, "no assigned agents to check")
         self.assertTrue(any(nm > 0 for nm in assigned), "assigned agents never named over 80 bursts")
 
-    def test_assignment_stable_across_mac_rotation(self):
-        before, after = stable(3)
-        rotated = 0
-        for i, (bn, bidx, bmac) in before.items():
-            an, aidx, amac = after[i]
-            self.assertEqual((an, aidx), (bn, bidx), f"agent {i} SSID set changed on MAC rotation")
-            if amac != bmac:
+    def test_assignment_redrawn_on_mac_rotation(self):
+        """A persona's saved-network set must NOT survive its MAC rotation.
+
+        This test asserted the OPPOSITE until 2026-08-26, per the 2026-07-22 directed-probe design:
+        a real phone's saved-network list is a property of the device, not of a MAC rotation, so
+        carrying it across was the realistic choice.
+
+        It was reversed under the no-persistent-identifiers rule. A saved-network set that outlives
+        a rotation IS a persistent identifier, and a strong one: it is the standard way MAC
+        randomisation gets defeated in practice. Two MACs probing for the same set are one device.
+
+        The realism cost is close to zero, and the reason is worth stating because it does not
+        generalise: the "device keeps its saved networks" property is only observable to someone who
+        has ALREADY linked the two MACs -- and the SSID set is what does the linking. Remove it and
+        there is no vantage point from which the change is visible. The tell erases itself.
+
+        Residual, known and accepted: aggregate SSID-to-MAC multiplicity. A real crowd shows one
+        SSID probed by several MACs over an hour; redrawing every rotation pushes the fleet toward
+        one MAC per SSID. The 38-name pool blunts this -- with far more personas than names,
+        collisions occur naturally -- but it does not erase it.
+        """
+        had = kept = rotated = 0
+        for seed in range(1, 25):
+            before, after = stable(seed)
+            for i, (bn, bidx, bmac) in before.items():
+                an, aidx, amac = after[i]
+                if amac == bmac:
+                    continue                       # no rotation, nothing to assert
                 rotated += 1
+                if bn > 0:
+                    had += 1
+                    if (an, aidx) == (bn, bidx):
+                        kept += 1
         self.assertGreater(rotated, 0, "no agent rotated its MAC (test exercised nothing)")
+        self.assertGreater(had, 8, "too few assigned agents rotated to measure carry-over")
+        # Independent redraw at SSID_ASSIGN_PCT=21 over a 38-name pool keeps an identical set only
+        # by coincidence: 0.21 * (1/38) ~= 0.6%. Carry-over would pin this at 100%. Anything above
+        # a third means the set is following the persona across the rotation again.
+        self.assertLess(kept / had, 0.34,
+                        f"{kept}/{had} personas kept their SSID set across a MAC rotation -- the set "
+                        f"is linking the two MACs, which is the handle the rotation exists to break")
 
 
 if __name__ == "__main__":

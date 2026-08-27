@@ -26,7 +26,7 @@ int main(int argc, char **argv)
         unsigned tickms = argc > 4 ? (unsigned)strtoul(argv[4], 0, 10) : 60000;
         srand(seed);
         probe_agents_init(1, 0);
-        probe_agent_sync(0, ARCH_IPHONE, 0, 2400000u, 1);   // bound agent, 40 min life, gen 1
+        probe_agent_sync(0, ARCH_R_VS, 0, 2400000u, 1);   // bound agent, 40 min life, gen 1
         char last[13] = "";
         uint32_t t = 0;
         for (int s = 0; s <= ticks; s++) {
@@ -441,7 +441,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    probe_arch_t a = (argc > 1) ? (probe_arch_t)strtoul(argv[1], 0, 10) : ARCH_IPHONE;
+    probe_arch_t a = (argc > 1) ? (probe_arch_t)strtoul(argv[1], 0, 10) : ARCH_R_VS;
     unsigned ch    = (argc > 2) ? (unsigned)strtoul(argv[2], 0, 10) : 6;
     bool band5     = (argc > 3) ? (strtoul(argv[3], 0, 10) != 0) : false;
     const char *ssid = (argc > 4) ? argv[4] : 0;                 // optional directed SSID

@@ -6,8 +6,15 @@ EXE  = os.path.join(TOOL, "probe_dump.exe" if os.name == "nt" else "probe_dump")
 
 # Must match phantom.h enum order.
 FAM = {0: "samsung", 1: "google", 2: "apple", 3: "generic"}
-# family -> (expected arch idx, expected BLE company). ARCH_IPHONE=0,GALAXY=1,PIXEL=2,ANDROID=3.
-EXPECT = {0: (1, 0x0075), 1: (2, 0x00E0), 2: (0, 0x0000), 3: (3, 0x0000)}
+# family -> (expected arch idx, expected BLE company).
+# ARCH_R_VS=0, R_EC15=1, R_HE=2, R_BARE=3, R_HTONLY=4.
+#
+# The archetype half is a STABLE ARBITRARY assignment, not a vendor claim: archetypes are captured
+# IE structures, and a capture can only say a layout exists and how common it is -- never which
+# handset emitted it. What this test pins is that the map is total and FIXED, because a persona's
+# BLE company id and its Wi-Fi structure must not drift apart inside one life.
+# PF_GENERIC moved 3 -> 4 on 2026-08-26 when ARCH_R_BARE was inserted ahead of ARCH_R_HTONLY.
+EXPECT = {0: (1, 0x0075), 1: (2, 0x00E0), 2: (0, 0x0000), 3: (4, 0x0000)}
 
 
 def phantoms(seed, n=12, ticks=4000, tick_ms=1000):

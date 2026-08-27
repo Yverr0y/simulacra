@@ -20,6 +20,7 @@
 #include "radar_geom.h"
 #include "radar_ui.h"
 #include "radar_wire.h"
+#include "radar_pad.h"
 #include "radar_key.h"
 #include "config_wire.h"
 #include "enroll_wire.h"
@@ -580,14 +581,23 @@ static void test_eddystone(void)
     }
 }
 
+// INVERTED 2026-08-26. This used to REQUIRE a tracker template and assert it emitted service data
+// for 0xFEED. That is byte-for-byte the Tile signature this project seeds into its own detector
+// (sig_seed.c sig_id=3), so every decoy built from it was a guaranteed tracker match -- and nearby
+// phones running tracker detection would tell their owners an unknown Tile was travelling with
+// them. The requirement is now the opposite: no template may emit a seeded threat signature.
+// Detecting a tracker is the point; impersonating one never is.
 static void test_tracker(void)
 {
-    const device_template_t *t = find_family(FMT_SVC_TRACKER);
-    ST_CHECK(t != NULL, "tracker template present");
-    if (!t) return;
-    uint8_t pay[31], len = 0; uint16_t itvl = 0, cid = 0;
-    ST_CHECK(template_build(t, pay, &len, &itvl, &cid) == 0 && len > 0, "tracker builds");
-    ST_CHECK(payload_has_svc_uuid16(pay, len, 0xFEED), "tracker svc-data 0xFEED");
+    ST_CHECK(find_family(FMT_SVC_TRACKER) == NULL,
+             "no tracker template (emitting one alerts bystanders' phones)");
+    // Belt and braces: no template of ANY family may carry the Tile service UUID.
+    for (size_t i = 0; i < templates_count(); i++) {
+        const device_template_t *t = template_at(i);
+        uint8_t pay[31], len = 0; uint16_t itvl = 0, cid = 0;
+        if (template_build(t, pay, &len, &itvl, &cid) != 0 || len == 0) continue;
+        ST_CHECK(!payload_has_svc_uuid16(pay, len, 0xFEED), "no template emits Tile 0xFEED");
+    }
 }
 
 // A MAC produced by make_random_addr_mixed/make_random_addr is a valid BLE random
@@ -678,6 +688,56 @@ static void test_observe_dedup(void)
     ST_CHECK(h1 != h2, "salt makes the dedup hash non-stable across boots");
 }
 
+// A rotating device must rotate INTO its pre-drawn next_addr, and that address must be visible to
+// the broadcast BEFORE the rotation happens. Without this, a freshly-rotated fleetmate address is
+// unexcluded for up to one broadcast interval, and peers in that window both count it as a real
+// ambient device (the 2026-08-25 population feedback) and match it against the tracker signature DB
+// (a `tile`-template decoy is a guaranteed confidence-75 Tile hit against its own fleet).
+static void test_ble_next_addr_prebroadcast(void)
+{
+    roster_init();
+    ble_devices_init(CHURN_ST_N, 0);
+
+    // Find a non-static device whose rotation deadline falls BEFORE its death, so the address
+    // change we observe is a rotation and not a rebirth. Both change addr; only rebirth resets
+    // born_ms, which is the discriminator used below.
+    // Retry across fresh populations, not just across slots of one. ATYPE_STATIC_W is 75 and RPA is
+    // 5, so a single population often contains no rotating device whose rotation precedes its
+    // death, and the premise check below then fails for want of a sample rather than for a real
+    // regression. (It did exactly that on 2026-08-26: removing the persistent-role branch changed
+    // how much esp_random the spawn path consumes, reshuffling the draw.)
+    int checked = 0;
+    for (int attempt = 0; attempt < 24 && checked < 3; attempt++) {
+    for (int slot = 0; slot < ble_devices_count() && checked < 3; slot++) {
+        const ble_device_t *cur = ble_devices_at(slot);
+        if (!cur || !cur->alive || cur->atype == BLE_ATYPE_STATIC) continue;
+        if (cur->next_rotate_ms >= cur->born_ms + cur->life_ms) continue;   // dies before rotating
+
+        const uint8_t *na = ble_device_next_addr(slot);
+        if (!na) continue;
+        uint8_t pre[6];  memcpy(pre,  na, 6);
+        uint8_t live[6]; memcpy(live, cur->id.addr, 6);
+        uint32_t born = cur->born_ms, deadline = cur->next_rotate_ms;
+        ST_CHECK(memcmp(pre, live, 6) != 0, "pre-drawn next_addr differs from the live address");
+
+        ble_devices_tick(deadline + 1);           // one tick, straight past the rotation deadline
+
+        const ble_device_t *aft = ble_devices_at(slot);
+        if (aft && aft->born_ms == born && memcmp(aft->id.addr, live, 6) != 0) {   // rotated
+            ST_CHECK(memcmp(aft->id.addr, pre, 6) == 0,
+                     "rotated INTO the pre-drawn address peers were already told about");
+            const uint8_t *na2 = ble_device_next_addr(slot);
+            ST_CHECK(na2 && memcmp(na2, pre, 6) != 0,
+                     "a fresh next_addr is drawn immediately after rotating");
+            checked++;
+        }
+        ble_devices_init(CHURN_ST_N, 0);          // fresh population for the next slot examined
+    }
+        if (checked < 3) ble_devices_init(CHURN_ST_N, 0);   // next attempt: redraw the whole crowd
+    }
+    ST_CHECK(checked > 0, "at least one rotation was observed (test premise)");
+}
+
 static void test_rf_model_nvs(void)
 {
     rf_model_t m; rf_model_reset(&m);
@@ -685,10 +745,30 @@ static void test_rf_model_nvs(void)
     rf_model_observe(&m, 0x0075, -60, 3, 900);
     rf_model_end_sweep(&m, 3, 60000, 3);
 
+    ST_CHECK(m.pop_ewma > 0.0f, "sweep seeded a non-zero density (test premise)");
+
     ST_CHECK(rf_model_save_nvs(&m) == 0, "rf_model saves to NVS");
     rf_model_t r; memset(&r, 0xAA, sizeof(r));
     ST_CHECK(rf_model_load_nvs(&r) == 0, "rf_model loads from NVS");
-    ST_CHECK(memcmp(&m, &r, sizeof(m)) == 0, "rf_model NVS round-trips byte-exact");
+
+    // SHAPE round-trips byte-exact; DENSITY deliberately does not. Restoring pop_ewma across a
+    // reboot latches the 2026-08-25 feedback excursion into flash (an inflated estimate is written
+    // every OBS_PERSIST_EVERY sweeps) and also mis-sizes a fleet that has been carried to a
+    // different room. Zeroing it makes a rebooted board start at GEN_FLOOR and grow into the room
+    // it is actually in. See rf_model_load_nvs.
+    ST_CHECK(r.pop_ewma == 0.0f, "density is NOT restored from NVS");
+    ST_CHECK(r.arrival_per_min == 0.0f, "arrival rate is NOT restored from NVS");
+    {
+        rf_model_t shape = m;                       // same model with density stripped
+        shape.pop_ewma = 0.0f; shape.arrival_per_min = 0.0f;
+        ST_CHECK(memcmp(&shape, &r, sizeof(shape)) == 0,
+                 "everything EXCEPT density round-trips byte-exact");
+    }
+    // The histograms are the point of persisting at all -- a reboot must not forget what the
+    // devices around here look like, only how many there were.
+    ST_CHECK(r.total_obs == m.total_obs && r.sweeps == m.sweeps, "observation counters survive");
+    ST_CHECK(rf_vendor_index(&r, 0x004C) >= 0 && rf_vendor_index(&r, 0x0075) >= 0,
+             "vendor histogram survives the reboot");
 }
 
 static void test_vendor_mfg_builder(void)
@@ -762,7 +842,7 @@ static void test_probe_frame(void)
 {
     const uint8_t mac[6] = {0x12,0x34,0x56,0x78,0x9a,0xbc};
     uint8_t f[PROBE_FRAME_MAX]; size_t n = 0;
-    ST_CHECK(probe_build_request(mac, 6, ARCH_IPHONE, false, NULL, 0, f, &n) == 0 && n >= 24 && n <= PROBE_FRAME_MAX, "probe frame builds, valid length");
+    ST_CHECK(probe_build_request(mac, 6, ARCH_R_VS, false, NULL, 0, f, &n) == 0 && n >= 24 && n <= PROBE_FRAME_MAX, "probe frame builds, valid length");
     ST_CHECK(f[0] == 0x40 && f[1] == 0x00, "frame control = probe request");
     bool da=true, bssid=true, sa=true;
     for (int i=0;i<6;i++){ if (f[4+i]!=0xff) da=false; if (f[16+i]!=0xff) bssid=false; if (f[10+i]!=mac[i]) sa=false; }
@@ -1090,19 +1170,24 @@ static void test_radar_wire(void)
     uint8_t frame[RADAR_FRAME_MAX]; size_t flen = 0;
     int rc = radar_wire_seal(frame, &flen, RADAR_TYPE_STATUS,
                              (uint8_t*)&st, sizeof st, SIMULACRA_ESPNOW_KEY, salt, 100);
-    ST_CHECK(rc == 0 && flen == RADAR_HDR_LEN + RADAR_NONCE_LEN + sizeof(st) + RADAR_TAG_LEN,
-             "seal produces a full frame");
-    ST_CHECK(frame[0] == RADAR_MAGIC0 && frame[3] == RADAR_TYPE_STATUS, "header intact");
-    // SEC-4: pin the v3 nonce layout on the wire. GCM nonce uniqueness rests on the salt width, so
-    // a silent revert to the 4-byte salt would quietly restore birthday-collision odds a long-lived
-    // fleet actually reaches -- and nothing else in the suite would notice.
-    ST_CHECK(frame[2] == 3, "wire version is 3");
-    ST_CHECK(memcmp(frame + RADAR_HDR_LEN, salt, RADAR_SALT_LEN) == 0,
-             "nonce carries the full 8-byte salt");
-    ST_CHECK(frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 0] == 0 &&
-             frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 1] == 0 &&
-             frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 2] == 0 &&
-             frame[RADAR_HDR_LEN + RADAR_SALT_LEN + 3] == 100,
+    // v4: the frame is exactly one length bucket -- [nonce][padded ct][tag], no header.
+    ST_CHECK(rc == 0 && flen == RADAR_NONCE_LEN + radar_pad_plaintext_len(sizeof st) + RADAR_TAG_LEN,
+             "seal produces a full bucketed frame");
+    ST_CHECK(RADAR_WIRE_VER == 4, "wire version is 4");
+    // v4: NOTHING identifying may ride in the clear. The first bytes are the nonce, not a magic.
+    // A regression here re-exposes the "this is Simulacra, and that node is the controller"
+    // signature that v4 exists to remove, and no other assertion would catch it.
+    ST_CHECK(!(frame[0] == 0x5A && frame[1] == 0x4D), "no plaintext magic survives in v4");
+    // SEC-4: pin the nonce layout on the wire. GCM nonce uniqueness rests on the salt width, so a
+    // silent revert to the 4-byte salt would quietly restore birthday-collision odds a long-lived
+    // fleet actually reaches -- and nothing else in the suite would notice. v4 moved the nonce to
+    // offset 0 (the header is gone) but did NOT change its layout.
+    ST_CHECK(memcmp(frame, salt, RADAR_SALT_LEN) == 0,
+             "nonce carries the full 8-byte salt, at offset 0");
+    ST_CHECK(frame[RADAR_SALT_LEN + 0] == 0 &&
+             frame[RADAR_SALT_LEN + 1] == 0 &&
+             frame[RADAR_SALT_LEN + 2] == 0 &&
+             frame[RADAR_SALT_LEN + 3] == 100,
              "counter is 4 bytes big-endian after the salt");
 
     uint8_t type, pl[RADAR_FRAME_MAX], osalt[RADAR_SALT_LEN]; size_t plen = 0; uint64_t ctr = 0;
@@ -1124,6 +1209,34 @@ static void test_radar_wire(void)
                  "exact-fit capacity still opens");
     }
 
+    {   // Every bucket round-trips, and the payload survives padding byte for byte. Sizes chosen to
+        // land on both sides of each bucket boundary (33/34, 97/98) so an off-by-one in the
+        // arithmetic shows up here rather than as a truncated frame on air.
+        static const size_t SIZES[] = { 0, 1, 4, 33, 34, 67, 97, 98, 174, 219 };
+        uint8_t s8[RADAR_SALT_LEN]; for (int j = 0; j < RADAR_SALT_LEN; j++) s8[j] = (uint8_t)j;
+        for (size_t i = 0; i < sizeof SIZES / sizeof SIZES[0]; i++) {
+            uint8_t src[219], got[219]; size_t n = SIZES[i], glen = 0; uint8_t gt = 0;
+            for (size_t j = 0; j < n; j++) src[j] = (uint8_t)(j * 7 + i);
+            uint8_t f[RADAR_FRAME_MAX]; size_t fl = 0;
+            ST_CHECK(radar_wire_seal(f, &fl, RADAR_TYPE_STATUS, src, n,
+                                     SIMULACRA_ESPNOW_KEY, s8, 9) == 0, "bucket seal ok");
+            ST_CHECK(fl == RADAR_NONCE_LEN + radar_pad_plaintext_len(n) + RADAR_TAG_LEN,
+                     "sealed length is exactly the bucket");
+            uint8_t os2[RADAR_SALT_LEN]; uint64_t oc2 = 0;
+            ST_CHECK(radar_wire_open(f, fl, SIMULACRA_ESPNOW_KEY, &gt, got, sizeof got,
+                                     &glen, os2, &oc2) == 0, "bucket open ok");
+            ST_CHECK(gt == RADAR_TYPE_STATUS && glen == n, "type and length recovered");
+            ST_CHECK(n == 0 || memcmp(src, got, n) == 0, "payload survives padding");
+        }
+    }
+    {   // A payload larger than the biggest bucket must be REFUSED at seal time, never truncated --
+        // silently dropping the tail would corrupt a fleet sync with no error anywhere.
+        uint8_t big[240]; size_t fl = 0; uint8_t f[RADAR_FRAME_MAX];
+        uint8_t s8[RADAR_SALT_LEN]; for (int j = 0; j < RADAR_SALT_LEN; j++) s8[j] = (uint8_t)j;
+        ST_CHECK(radar_wire_seal(f, &fl, RADAR_TYPE_STATUS, big, sizeof big,
+                                 SIMULACRA_ESPNOW_KEY, s8, 10) < 0, "oversized payload refused");
+    }
+
     frame[flen - 1] ^= 0x01;                                   // tamper the tag
     ST_CHECK(radar_wire_open(frame, flen, SIMULACRA_ESPNOW_KEY, &type, pl, sizeof pl, &plen, osalt, &ctr) < 0,
              "tampered frame rejected");
@@ -1134,14 +1247,21 @@ static void test_radar_wire(void)
     ST_CHECK(!radar_replay_ok(&rp, salt, 99),  "older counter rejected");
     ST_CHECK(radar_replay_ok(&rp, salt, 101),  "newer counter accepted");
 
-    // SEC-1: the telemetry gate treats an unfamiliar salt as "peer rebooted" and accepts. That is
-    // deliberate there, and exactly why CONTROL must not use it - pin the difference in a test.
+    // The telemetry gate still accepts an UNFAMILIAR salt (a peer really can reboot), but it no
+    // longer FORGETS the previous one. Alternating two captured sessions used to be accepted
+    // forever, which made a replayed REQUEST an active fleet-presence oracle: replay one captured
+    // frame, watch for the STATUS answer, learn a fleet is present. Fixed 2026-08-26 by keeping a
+    // high-water counter per salt.
     {
         uint8_t salt_b[RADAR_SALT_LEN] = { 0xDE,0xAD,0xBE,0xEF,0x05,0x06,0x07,0x08 };
         ST_CHECK(radar_replay_ok(&rp, salt_b, 1),
-                 "telemetry gate: new salt resets the counter (documented weakness)");
-        ST_CHECK(radar_replay_ok(&rp, salt, 1),
-                 "telemetry gate: alternating two captured sessions is accepted forever");
+                 "new salt accepted (a peer really can reboot)");
+        ST_CHECK(!radar_replay_ok(&rp, salt, 1),
+                 "alternating back to a KNOWN salt does not reopen its window");
+        ST_CHECK(!radar_replay_ok(&rp, salt_b, 1),
+                 "and the second session keeps its own high-water mark too");
+        ST_CHECK(radar_replay_ok(&rp, salt, 102),
+                 "a genuinely newer counter on a known salt is still accepted");
 
         uint64_t floor = 0;
         ST_CHECK(radar_replay_monotonic_ok(&floor, 100) && floor == 100, "control: first accepted");
@@ -1156,7 +1276,23 @@ static void test_radar_wire(void)
                  "control: reboot does not reopen the replay window");
     }
     uint8_t salt2[RADAR_SALT_LEN] = { 1,2,3,4,5,6,7,8 };
-    ST_CHECK(radar_replay_ok(&rp, salt2, 1),   "reboot (new salt) resets + accepts");
+    ST_CHECK(radar_replay_ok(&rp, salt2, 1),   "reboot (new salt) accepted");
+    // Eviction is bounded, not unbounded: cycling MORE distinct salts than the table holds does
+    // eventually free a slot, which is the residual cost of having to honour real reboots at all.
+    // Pinned so the bound is visible rather than assumed.
+    {
+        radar_replay_t ev = {0};
+        uint8_t s_i[RADAR_SALT_LEN] = {0};
+        for (int i = 0; i < RADAR_REPLAY_PEERS; i++) { s_i[0] = (uint8_t)(0x40 + i);
+            ST_CHECK(radar_replay_ok(&ev, s_i, 500), "fill: distinct salt accepted"); }
+        s_i[0] = 0x40;
+        ST_CHECK(!radar_replay_ok(&ev, s_i, 500), "still remembered while resident");
+        for (int i = 0; i < RADAR_REPLAY_PEERS; i++) { s_i[0] = (uint8_t)(0x80 + i);
+            radar_replay_ok(&ev, s_i, 500); }                       // evict every original entry
+        s_i[0] = 0x40;
+        ST_CHECK(radar_replay_ok(&ev, s_i, 500),
+                 "an attacker with more captured sessions than the table holds can still cycle");
+    }
 }
 
 static void test_espnow_convert(void)
@@ -1483,17 +1619,14 @@ static void test_escalation_recurrence(void)
 static void test_settings_resolve(void)
 {
     sim_settings_t s;
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_NORMAL, 4, 16, &s) == 0, "resolve NORMAL ok");
-    ST_CHECK(s.active_target == 16 && !s.paused && s.accel == 1.0f, "NORMAL fills ceiling, running");
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_AUTO, 4, 16, &s) == 0, "resolve AUTO ok");
+    ST_CHECK(s.auto_scale && !s.paused && s.accel == 1.0f, "AUTO scales with the room, running");
 
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_STEALTH, 4, 16, &s) == 0, "resolve STEALTH ok");
-    ST_CHECK(s.active_target == 6 && s.accel == 1.0f, "STEALTH ~40% ceiling, unhurried turnover");
-
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_MAX, 4, 16, &s) == 0, "resolve MAX ok");
-    ST_CHECK(s.active_target == 16 && s.accel > 2.0f, "MAX cranks turnover");
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_HIGH, 4, 16, &s) == 0, "resolve HIGH ok");
+    ST_CHECK(s.active_target == 16 && !s.auto_scale, "HIGH fills the ceiling, ignores the room");
 
     ST_CHECK(sim_settings_resolve(SIM_PRESET_PAUSE, 4, 16, &s) == 0, "resolve PAUSE ok");
-    ST_CHECK(s.paused && s.active_target == 16, "PAUSE freezes rotation, crowd stays on-air");
+    ST_CHECK(s.paused && s.auto_scale, "PAUSE freezes rotation, crowd stays on-air");
 
     ST_CHECK(sim_settings_resolve(SIM_PRESET_COUNT, 4, 16, &s) == -1, "bad preset rejected");
 
@@ -1503,13 +1636,29 @@ static void test_settings_resolve(void)
     ST_CHECK(bad.active_target >= SIM_TARGET_FLOOR, "clamp raises target to floor");
     ST_CHECK(bad.accel <= 4.0f, "clamp bounds accel");
 
-    // The persona floor wins over a preset that would shrink the crowd below it: personas are a
-    // design constant and are capped at half the population, so squeezing the crowd would starve
-    // them out and leave an all-phone monoculture (or no personas at all).
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_STEALTH, 24, 32, &s) == 0 && s.active_target == 24,
-             "STEALTH raised to the persona floor");
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_NORMAL, 24, 32, &s) == 0 && s.active_target == 32,
-             "NORMAL still fills the ceiling above the floor");
+    // MANUAL levels are ordered and DISTINCT, and the persona floor must NOT raise them. On the C5
+    // that floor equals the ceiling, so clamping against it collapsed LOW/MED onto HIGH -- exactly
+    // the STEALTH==NORMAL collision the AUTO/MANUAL split exists to remove (2026-08-24).
+    {
+        sim_settings_t lo, me, hi;
+        ST_CHECK(sim_settings_resolve(SIM_PRESET_LOW,  24, 32, &lo) == 0, "LOW resolves");
+        ST_CHECK(sim_settings_resolve(SIM_PRESET_MED,  24, 32, &me) == 0, "MED resolves");
+        ST_CHECK(sim_settings_resolve(SIM_PRESET_HIGH, 24, 32, &hi) == 0, "HIGH resolves");
+        ST_CHECK(lo.active_target < me.active_target, "LOW is smaller than MED");
+        ST_CHECK(me.active_target < hi.active_target, "MED is smaller than HIGH");
+        ST_CHECK(hi.active_target == 32, "HIGH is the board ceiling");
+        ST_CHECK(lo.active_target < 24, "the persona floor does NOT raise a MANUAL level");
+        ST_CHECK(!lo.auto_scale && !me.auto_scale && !hi.auto_scale, "manual levels are not auto");
+    }
+
+    // AUTO IS floored, but on the MINIMUM viable persona count, not the designed one -- the floor
+    // must leave real range between itself and the ceiling or AUTO cannot track the room at all.
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_AUTO, 24, 32, &s) == 0 && s.active_target >= 24,
+             "AUTO is raised to the persona floor");
+    ST_CHECK(sim_settings_floor() < sim_settings_ceiling(),
+             "AUTO has range on this board: floor must be strictly below the ceiling");
+    ST_CHECK(sim_settings_floor() >= 2 * SIM_PERSONA_MIN,
+             "AUTO floor still hosts the minimum personas at the crowd/2 cap");
     {
         sim_settings_t low = { .active_target = 1, .paused = false, .accel = 1.0f };
         sim_settings_clamp(&low, 24, 32);
@@ -1517,7 +1666,17 @@ static void test_settings_resolve(void)
     }
 
     // Ceiling honored on a smaller board (Shade-like ceiling).
-    ST_CHECK(sim_settings_resolve(SIM_PRESET_MAX, 4, 8, &s) == 0 && s.active_target == 8, "MAX clamps to board ceiling");
+    ST_CHECK(sim_settings_resolve(SIM_PRESET_HIGH, 4, 8, &s) == 0 && s.active_target == 8,
+             "HIGH clamps to board ceiling");
+
+    // Every preset must round-trip through match_preset, or the console lies about the mode.
+    // PAUSE and AUTO both set auto_scale and are separated only by `paused` -- a regression there
+    // would report a paused fleet that is actually churning.
+    for (sim_preset_t p = SIM_PRESET_PAUSE; p < SIM_PRESET_COUNT; p++) {
+        sim_settings_t r;
+        if (sim_settings_resolve(p, 4, 16, &r) != 0) continue;
+        ST_CHECK(sim_settings_match_preset(&r, 4, 16) == p, "every preset round-trips");
+    }
 }
 
 static void test_settings_apply(void)
@@ -1530,19 +1689,18 @@ static void test_settings_apply(void)
     // running NORMAL is the same failure class as a forged command, just self-inflicted.
     //
     // Bounds are read from the board (floor/ceiling), never hardcoded: the two differ per target
-    // (C5 32/32, C6 16/24), and on a board where the designed personas consume the whole budget
-    // STEALTH legitimately cannot shrink at all.
-    sim_settings_apply_preset(SIM_PRESET_STEALTH);
-    ST_CHECK(!churn_paused(), "STEALTH is running");
-    ST_CHECK(churn_active_target() >= fl, "STEALTH never starves the personas");
-    ST_CHECK(churn_active_target() <= ce, "STEALTH never exceeds the ceiling");
-    ST_CHECK(churn_accel() == 1.0f, "STEALTH leaves turnover at the designed rate");
-    uint8_t stealth_n = churn_active_target();
+    // (C5 32/32, C6 16/24). MANUAL levels are deliberately NOT floored at the persona budget --
+    // an operator asking for LOW means LOW, and coexist caps personas at crowd/2 so they shrink.
+    sim_settings_apply_preset(SIM_PRESET_LOW);
+    ST_CHECK(!churn_paused(), "LOW is running");
+    ST_CHECK(churn_active_target() >= SIM_TARGET_FLOOR, "LOW never goes below the absolute floor");
+    ST_CHECK(churn_active_target() <= ce, "LOW never exceeds the ceiling");
+    ST_CHECK(churn_accel() == 1.0f, "LOW leaves turnover at the designed rate");
+    uint8_t low_n = churn_active_target();
 
-    sim_settings_apply_preset(SIM_PRESET_MAX);
-    ST_CHECK(churn_active_target() == ce, "MAX actually refills the crowd to the ceiling");
-    ST_CHECK(churn_active_target() >= stealth_n, "MAX is never smaller than STEALTH");
-    ST_CHECK(churn_accel() > 2.0f, "MAX actually accelerates turnover");
+    sim_settings_apply_preset(SIM_PRESET_HIGH);
+    ST_CHECK(churn_active_target() == ce, "HIGH actually refills the crowd to the ceiling");
+    ST_CHECK(churn_active_target() > low_n, "HIGH is strictly larger than LOW (no collision)");
 
     // TURBO bypasses the fleet-share ceiling/floor entirely: the board's OWN hardware max, not the
     // K-shared value `ce` above. Also: no persona coupling (turbo releases any bound personas), and
@@ -1556,14 +1714,18 @@ static void test_settings_apply(void)
     ST_CHECK(phantom_count() == 0, "TURBO releases any bound personas");
     ST_CHECK(sim_settings_current_preset() == SIM_PRESET_TURBO, "display correctly infers TURBO");
 
-    sim_settings_apply_preset(SIM_PRESET_NORMAL);
+    sim_settings_apply_preset(SIM_PRESET_AUTO);
     ST_CHECK(sim_settings_current_preset() != SIM_PRESET_TURBO, "leaving TURBO actually turns it off");
-    ST_CHECK(churn_active_target() <= ce, "population returns to the fleet-shared ceiling after TURBO");
+    ST_CHECK(churn_active_target() <= ce, "population returns to the board ceiling after TURBO");
 
-    // The property the floor exists for: NO preset can shrink the crowd below the persona budget.
+    // The property the persona floor exists for, now scoped to AUTO: ROOM-driven resizing must
+    // never starve the designed personas. MANUAL levels are excluded deliberately -- they are an
+    // explicit operator choice, not a property of the room (see sim_settings_floor).
     for (sim_preset_t p = SIM_PRESET_PAUSE; p < SIM_PRESET_COUNT; p++) {
+        sim_settings_t r;
+        if (sim_settings_resolve(p, fl, ce, &r) != 0 || !r.auto_scale) continue;
         sim_settings_apply_preset(p);
-        ST_CHECK(churn_active_target() >= fl, "every preset keeps room for the designed personas");
+        ST_CHECK(churn_active_target() >= fl, "every AUTO preset keeps room for the designed personas");
     }
 
     sim_settings_apply_preset(SIM_PRESET_PAUSE);
@@ -1574,11 +1736,16 @@ static void test_settings_apply(void)
     sim_settings_t g; sim_settings_get(&g);
     ST_CHECK(g.paused, "get reflects last applied (PAUSE)");
 
-    // Preset inference (wire-v2 live-preset reporting): apply -> report the same preset.
-    sim_settings_apply_preset(SIM_PRESET_MAX);
-    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_MAX, "current_preset reports MAX after apply");
-    sim_settings_apply_preset(SIM_PRESET_STEALTH);
-    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_STEALTH, "current_preset reports STEALTH after apply");
+    // Preset inference (live-preset reporting): apply -> report the same preset.
+    sim_settings_apply_preset(SIM_PRESET_HIGH);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_HIGH, "current_preset reports HIGH after apply");
+    sim_settings_apply_preset(SIM_PRESET_LOW);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_LOW, "current_preset reports LOW after apply");
+    // AUTO and PAUSE share auto_scale; the console must still tell them apart.
+    sim_settings_apply_preset(SIM_PRESET_AUTO);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_AUTO, "current_preset reports AUTO, not PAUSE");
+    sim_settings_apply_preset(SIM_PRESET_PAUSE);
+    ST_CHECK(sim_settings_current_preset() == SIM_PRESET_PAUSE, "current_preset reports PAUSE, not AUTO");
     {
         sim_settings_t custom; sim_settings_get(&custom);
         custom.accel = 1.75f;                         // a value no preset resolves to
@@ -1586,8 +1753,8 @@ static void test_settings_apply(void)
         ST_CHECK(sim_settings_current_preset() == SIM_PRESET_COUNT, "granular settings report CUSTOM");
     }
 
-    // Restore NORMAL so subsequent tests run with defaults.
-    sim_settings_apply_preset(SIM_PRESET_NORMAL);
+    // Restore AUTO so subsequent tests run with defaults.
+    sim_settings_apply_preset(SIM_PRESET_AUTO);
 }
 
 static void test_config_wire(void)
@@ -1595,7 +1762,13 @@ static void test_config_wire(void)
     uint8_t pk[32], sk[64];
     crypto_sign_keypair(pk, sk);                       // ephemeral test keypair
     uint8_t nonce[12]; for (int i=0;i<12;i++) nonce[i] = (uint8_t)(i*7+1);
-    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = 3 };
+    // Wire v2 layout is a fleet-wide contract: a v1 Vigil sends STEALTH(1) and a v2 decoy would
+    // read AUTO(1). Pin the size so a struct edit cannot silently desync a fleet.
+    ST_CHECK(sizeof(config_cmd_t) == 3, "config_cmd_t is 3 bytes in wire v2");
+    ST_CHECK(CONFIG_WIRE_PAYLOAD_LEN == 67, "config payload is cmd(3) + sig(64)");
+    ST_CHECK(CONFIG_WIRE_VER == 2, "config wire version is 2");
+
+    config_cmd_t cmd = { .version = CONFIG_WIRE_VER, .preset_id = 3, .cap = 24 };
 
     uint8_t pl[CONFIG_WIRE_PAYLOAD_LEN];
     int n = config_wire_pack_signed(pl, sizeof pl, &cmd, nonce, sk);
@@ -1604,6 +1777,7 @@ static void test_config_wire(void)
     config_cmd_t got;
     ST_CHECK(config_wire_open_signed(pl, n, nonce, pk, &got) == 0, "open verifies good sig");
     ST_CHECK(got.preset_id == 3 && got.version == CONFIG_WIRE_VER, "open recovers cmd");
+    ST_CHECK(got.cap == 24, "open recovers the AUTO cap");
 
     pl[0] ^= 0x01;                                      // tamper cmd byte
     ST_CHECK(config_wire_open_signed(pl, n, nonce, pk, &got) != 0, "tampered cmd fails verify");
@@ -1817,6 +1991,7 @@ int churn_selftest_run(void)
     test_roster_payloads();
     test_rf_model();
     test_observe_dedup();
+    test_ble_next_addr_prebroadcast();
     test_rf_model_nvs();
     test_vendor_mfg_builder();
     test_generate();

@@ -2,16 +2,47 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "identity.h"
+#include "rf_model.h"   // rf_model_t is an anonymous typedef; it cannot be forward-declared
 
 // Max concurrent persistent devices per board. The runtime population (set at init) is
 // clamped to this. Perceived density comes from turnover, not from raising this ceiling.
 #define BLE_DEVICES_MAX 32
 
+// HARD CEILING on how long any single address may stay on air, whatever its role, subtype, or
+// RADIO. Shared with probe_agents.c so the Wi-Fi side cannot drift away from it.
+//
+// This is the project's core invariant, and until 2026-08-26 nothing enforced it. Rotation bounded
+// RPA and NRPA, but STATIC never rotates (next_rotate_ms = 0), so a static device's address was on
+// air for its entire life: up to 90 min on the resident band and 4-12 h on the since-removed
+// persistent band. With ATYPE_STATIC_W at 75, that was three quarters of the crowd. Measured on the
+// 2026-08-25 capture, static addresses reached 57.5 min on air inside a 60 min window while RPA
+// peaked at 19.3 min -- and the capture was too short to see the persistent tail at all.
+//
+// 15 min matches real phone RPA rotation, so no decoy identity outlives the thing it is covering.
+// STATIC honours it by dying and being reborn as a NEW device rather than by rotating: an address
+// whose top two bits declare "I am static" must not rotate, or it contradicts itself on air.
+#define ADDR_MAX_ONAIR_MS  900000u    // 15 min
+
+// The model personas draw their TX power from, so bound personas and the unbound crowd sample ONE
+// distribution. Set by the coordinator; NULL is fine and yields the cold-start spread. Passed in
+// rather than reached for, because ble_devices sits below observe in the build and the host audit
+// links it without observe.c at all.
+void ble_devices_set_model(const rf_model_t *m);
+
 typedef enum { BLE_ATYPE_STATIC, BLE_ATYPE_RPA, BLE_ATYPE_NRPA } ble_atype_t;
-// PERSISTENT = long-lived static "infrastructure" (beacons/fixtures): one address held for hours,
-// matching the real ambient >2h presence tail that a purely-churning fleet lacks. Always static
-// (only a non-rotating address can actually persist on air).
-typedef enum { BLE_ROLE_TRANSIENT, BLE_ROLE_RESIDENT, BLE_ROLE_PERSISTENT } ble_role_t;
+// Lifetime bands. There is deliberately NO persistent/"infrastructure" role.
+//
+// One existed until 2026-08-26: a slice of static devices held a single address for 4-12 h to
+// reproduce the real ambient >2h presence tail, because presence_duration is a scored audit axis.
+// It was removed because it inverted the project's purpose. A decoy that keeps one address for
+// hours, on a board carried by the operator, is a better tracking handle than the phone it is
+// meant to cover - phones rotate their RPA every ~15 min. Cover that outlives the thing it covers
+// stops being cover. Population realism is instrumental; not being trackable is terminal, and when
+// the two conflict the terminal goal wins.
+//
+// The cost is accepted knowingly: the fleet no longer reproduces ambient's long presence tail, so
+// presence_duration separability rises in STATIONARY observation. See ADDR_MAX_ONAIR_MS.
+typedef enum { BLE_ROLE_TRANSIENT, BLE_ROLE_RESIDENT } ble_role_t;
 
 typedef struct {
     identity_t  id;             // advertising identity: addr + frozen behaviour (payload/itvl/tx/company/arch)
@@ -20,10 +51,29 @@ typedef struct {
     uint32_t    born_ms;        // set at spawn; == now on a fresh birth/rebirth
     uint32_t    life_ms;        // bounded lifetime; on expiry the device dies and is reborn fresh
     uint32_t    next_rotate_ms; // next address rotation (ignored for STATIC)
+    // The address this device will rotate TO, drawn in advance so fleetmates can be told about it
+    // BEFORE it appears on air. Unused for STATIC (never rotates).
+    //
+    // Exclusion is by MAC and only covers addresses already broadcast, so a freshly-rotated
+    // fleetmate address used to be invisible to peers for up to one broadcast interval (20-30 s).
+    // The 2026-08-25 capture showed that window causes two separate failures at once:
+    //   1. peers count the unknown address as a REAL ambient device -> population feedback
+    //      (fleet-wide 32 -> 65 -> 33 -> 42 over an hour, ambient provably flat throughout)
+    //   2. peers MATCH it against the tracker signature DB -> a `tile`-template decoy is a
+    //      guaranteed confidence-75 Tile hit (templates.c writes sd[0..1]={0xED,0xFE}; sig_seed.c
+    //      matches pattern={0xED,0xFE} at pat_off=0), so the fleet populates its own threat display
+    //      in the exact category that display exists to warn about -- and detect_note_known
+    //      persists it to NVS, so the false hits outlive reboots.
+    // Broadcasting next_addr alongside the current one closes that window to zero.
+    uint8_t     next_addr[6];
     bool        alive;
     int8_t   persona_idx;       // >=0: bound to phantom[persona_idx]; -1: unbound BLE-only crowd
     uint32_t persona_gen;       // last phantom generation this bound member synced to
 } ble_device_t;
+
+// The address this device will rotate to next, or NULL for a STATIC device (which never rotates).
+// Broadcast alongside the live address so peers can exclude it before it is used.
+const uint8_t *ble_device_next_addr(int slot);
 
 // Spawn `n` persistent devices (clamped to BLE_DEVICES_MAX). Behaviour is drawn from the
 // roster library, so roster_init() MUST have been called first.

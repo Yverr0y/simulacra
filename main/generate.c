@@ -1,9 +1,10 @@
 #include <string.h>
 #include "generate.h"
 #include "templates.h"
-#include "churn.h"          // CHURN_ACTIVE_SET
+#include "ble_devices.h"    // BLE_DEVICES_MAX: the real bound on the crowd (static array size)
 #include "roster.h"         // make_random_static_addr_pub
 #include "learn.h"          // learned templates (self-learning)
+#include "law3.h"           // fail-closed gate on what may go on air
 #include "esp_random.h"
 #include "esp_log.h"
 
@@ -13,11 +14,9 @@ static const char *TAG = "generate";
 #if CONFIG_IDF_TARGET_ESP32C5
 #define GEN_FACTOR_X10 15   // Ward: 1.5x
 #define GEN_FLOOR      6
-#define GEN_CEILING    16
 #else
 #define GEN_FACTOR_X10 11   // Shade: 1.1x
 #define GEN_FLOOR      4
-#define GEN_CEILING    8
 #endif
 
 // interval bin [lo,hi) edges in ms; the >2000 bin caps at 3000.
@@ -55,17 +54,38 @@ static const device_template_t *first_of_family(fmt_family_t fam)
     return 0;
 }
 
-// Choose the AD structure for a no-mfg decoy, matched to real ambient BLE: mostly TERSE advertisers
-// (flags-only "01", flags+uuid16 "01,03") with a small service-data beacon share for tracker/beacon
-// persona. All are no-mfg on air, so this keeps the vendor histogram closed while closing the
-// AD-structure tell - the no-mfg mass used to be ~100% service-data ("01,03,16") against a
-// flags-heavy real crowd (~53% flags-only / ~21% flags+uuid). NULL only if no templates exist.
-static const device_template_t *pick_no_mfg_template(void)
+// Choose the AD structure for a no-mfg decoy.
+//
+// LEARNED as of 2026-08-26. This function used to hardcode ~62% flags-only / ~24% flags+uuid16,
+// fitted on 2026-07-13 to one capture in which flags-only advertisers were 52.7% of devices. That
+// closed ad_structure to 0.153 on that capture and left it at 0.27-0.93 on every other -- the
+// worst number on the scorecard, and the only generation axis rf_model could not express. Interval
+// and vendor stay closed everywhere precisely because they sample the model; structure now does
+// too, so it tracks whatever room the board is actually in.
+//
+// The hardcoded mix survives ONLY as the cold-start default, used until the model has seen
+// RF_ADSTRUCT_MIN_OBS no-mfg adverts. A fresh boot in an unknown room has to emit something, and
+// terse-majority is the better prior -- but it is now a starting guess that gets overwritten,
+// rather than a permanent constant fitted to one July afternoon.
+static const device_template_t *pick_no_mfg_template(const rf_model_t *m)
 {
-    uint32_t r = esp_random() % 100;
     const device_template_t *t = 0;
-    if      (r < 62) t = first_of_family(FMT_FLAGS_ONLY);   // terse-advertiser majority
-    else if (r < 86) t = first_of_family(FMT_SVC_UUID16);   // flags + service UUID
+    uint8_t bin;
+    if (m && rf_adstruct_sample(m, esp_random(), &bin)) {
+        switch (bin) {
+            case RF_ADS_FLAGS_ONLY: t = first_of_family(FMT_FLAGS_ONLY); break;
+            case RF_ADS_UUID16:     t = first_of_family(FMT_SVC_UUID16); break;
+            // RF_ADS_SVCDATA falls through to the beacon draw below. RF_ADS_OTHER never arrives:
+            // rf_adstruct_sample excludes it and redistributes its weight, because emitting a
+            // substitute at OTHER's full observed share spends real mass on a shape the room may
+            // not contain at all.
+            default: break;
+        }
+    } else {
+        uint32_t r = esp_random() % 100;                    // cold start only
+        if      (r < 62) t = first_of_family(FMT_FLAGS_ONLY);
+        else if (r < 86) t = first_of_family(FMT_SVC_UUID16);
+    }
     if (t) return t;
     // remaining share (and any fallback): a service-data beacon, weighted within the beacon families.
     uint32_t total = 0;
@@ -80,10 +100,40 @@ static const device_template_t *pick_no_mfg_template(void)
     return 0;
 }
 
+// How many live decoys may share ONE learned shape, from how often that shape was actually seen.
+//
+// A learned skeleton is copied from a REAL nearby device: element order, lengths, and the fields
+// learn_strip keeps verbatim (flags, service-uuid lists, tx power, appearance). rand_mask
+// re-randomises the instance bytes, so identity does not leak -- but the SHAPE does not vary. With
+// a uniform pick per company, if the fleet had learned exactly one shape for vendor X then EVERY
+// decoy of vendor X rendered from that one skeleton, and an observer saw the original plus N
+// byte-shaped clones of it.
+//
+// For a common model that is fine and even correct: real crowds contain many identical handsets.
+// For a RARE device it is not -- several copies of something unusual is implausible on its face,
+// and the promotion gate (LEARN_MIN_SIGHTINGS within a sweep) filters slow advertisers, not rare
+// ones, so a rare-but-chatty device is exactly what gets learned.
+//
+// reinforce_count already distinguishes the two: it counts how often the shape was re-seen. Tie
+// the clone budget to it, so a shape seen once appears once and only a well-attested shape gets a
+// crowd. Cheap and self-correcting -- a genuinely common model earns its copies by being common.
+#define LEARN_CLONE_MAX 6
+static uint8_t learn_clone_budget(const learned_template_t *lt)
+{
+    uint32_t b = 1u + (uint32_t)lt->reinforce_count / 2u;
+    return (uint8_t)(b > LEARN_CLONE_MAX ? LEARN_CLONE_MAX : b);
+}
+
+// Per-shape usage within ONE roster build. generate_roster fills the whole roster in a single
+// pass, so counting here bounds concurrent live copies without any cross-call state.
+static uint8_t s_clone_used[LEARN_CAP];
+static void generate_reset_clone_budget(void) { memset(s_clone_used, 0, sizeof s_clone_used); }
+
 // Map a sampled company id -> a built payload + a representative archetype index (always valid).
-// 0x004C -> iBeacon; 0xFFFF (no-mfg) -> a beacon/tracker family; a templated company -> its template;
-// otherwise a generic vendor-mfg carrying that company id.
-static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uint8_t *arch_idx)
+// 0x004C -> iBeacon; 0xFFFF (no-mfg) -> a beacon/tracker family; a templated company -> its
+// template; otherwise a generic vendor-mfg carrying that company id.
+static int build_for_vendor(const rf_model_t *m, uint16_t company, uint8_t out[31],
+                            uint8_t *len, uint8_t *arch_idx)
 {
     // Prefer a learned shape for this company when one exists (adds real-world variety).
     // archetype_idx offset scheme: >= templates_count() means learned[idx - templates_count()].
@@ -93,12 +143,16 @@ static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uin
             const learned_template_t *lt = learn_at(i);
             bool match = (company == RF_VENDOR_UNKNOWN) ? (lt->company_id == 0)
                                                         : (lt->company_id == company);
-            if (match) cand[k++] = i;
+            // Skip shapes that have already been cloned to their budget this build; falling
+            // through to a template is better than another copy of the same real device.
+            if (match && i < LEARN_CAP && s_clone_used[i] < learn_clone_budget(lt))
+                cand[k++] = i;
         }
         if (k > 0) {
             size_t pick = cand[esp_random() % k];
             uint16_t itvl;
             if (learn_render(learn_at(pick), out, len, &itvl) == 0) {
+                if (pick < LEARN_CAP && s_clone_used[pick] < 0xFF) s_clone_used[pick]++;
                 *arch_idx = (uint8_t)(templates_count() + pick);
                 return 0;
             }
@@ -118,7 +172,7 @@ static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uin
     // an iBeacon broadcasts Apple 0x004C manufacturer data, so it belongs to the 0x004C vendor slot,
     // not the no-mfg mass. Keeping OTHER on service-data families makes it no-mfg on air, like real.
     if (company == RF_VENDOR_UNKNOWN) {
-        const device_template_t *t = pick_no_mfg_template();
+        const device_template_t *t = pick_no_mfg_template(m);
         if (t) {
             uint16_t itvl, cid;
             if (template_build(t, out, len, &itvl, &cid)==0){
@@ -144,11 +198,9 @@ static int build_for_vendor(uint16_t company, uint8_t out[31], uint8_t *len, uin
     return 1;
 }
 
-static int8_t dither_tx(void)   // plausible TX spread; not all at max
-{
-    static const int8_t lv[] = { -12, -9, -6, -3, 0, 3 };   // 0 -> controller default in churn_adv
-    return lv[esp_random() % (sizeof(lv)/sizeof(lv[0]))];
-}
+// TX power comes from rf_tx_sample() in rf_model.c: personas (ble_device_sync) need the same
+// draw, and two halves of one crowd sampling different distributions widened the combined
+// spread past ambient.
 
 // Draw a diverse built-in template into an identity, avoiding `avoid` (the over-represented company
 // we're diversifying away from - the built-in earbuds-sams template is itself 0x0075). Sets
@@ -159,7 +211,7 @@ static uint16_t diversify_fill(const rf_model_t *m, identity_t *id, uint16_t avo
     // service-data beacon families (eddystone/tile), varied within them. Otherwise (an
     // over-represented real vendor) diversify across the whole template library.
     bool no_mfg = (avoid == RF_VENDOR_UNKNOWN);
-    const device_template_t *t = no_mfg ? pick_no_mfg_template() : 0;
+    const device_template_t *t = no_mfg ? pick_no_mfg_template(m) : 0;
     if (!t) {                       // real over-represented vendor, or no service-data template exists
         t = templates_pick();
         for (int a = 0; a < 8 && t->company_id == avoid; a++) t = templates_pick();
@@ -181,6 +233,7 @@ static uint16_t diversify_fill(const rf_model_t *m, identity_t *id, uint16_t avo
 
 size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
 {
+    generate_reset_clone_budget();   // per-build: bound how often one real device gets cloned
     // build the vendor sampling table: occupied 24 slots + other(no-mfg 0xFFFF)
     uint32_t counts[RF_VENDOR_SLOTS + 1];
     uint16_t ids[RF_VENDOR_SLOTS + 1];
@@ -213,7 +266,7 @@ size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
             company = diversify_fill(m, id, company);   // sets payload/len/itvl/archetype
         } else {
             uint8_t arch=0;
-            if (build_for_vendor(company, id->payload, &id->payload_len, &arch)!=0){ id->payload_len=0; }
+            if (build_for_vendor(m, company, id->payload, &id->payload_len, &arch)!=0){ id->payload_len=0; }
             id->archetype_idx = arch;
             // Interval from the model: this vendor's histogram for a real slot, else the ambient
             // no-mfg (OTHER) histogram. Only fall back to a generic 100-300ms when neither has data.
@@ -223,18 +276,46 @@ size_t generate_roster(const rf_model_t *m, identity_t *roster, size_t n)
             id->adv_itvl_ms = itvl ? itvl : (uint16_t)(100 + (esp_random()%200));
         }
         id->company_id = company;
-        id->tx_power = dither_tx();
+        id->tx_power = rf_tx_sample(m, esp_random());
+        // MFG-BEARING structure, from the learned mix. enc_vendor_mfg emits one shape ("01,ff")
+        // whose real share measured 100.0% / 50.0% / 15.6% / 0.0% across four decoy-free captures
+        // -- the same collapse that made the hardcoded no-mfg mix a single-capture overfit, so it
+        // is sampled rather than fixed. Applied only where the payload actually carries mfg data:
+        // service-data beacons and terse advertisers have their own structure and must not be
+        // reshaped by a mix describing a different population.
+        if (id->payload_len && company != RF_VENDOR_UNKNOWN) {
+            uint8_t mv;
+            if (rf_mfgstruct_sample(m, esp_random(), &mv))
+                template_apply_mfg_variant(id->payload, &id->payload_len, mv);
+        }
+        // Fail-closed emission gate on the TEMPLATE path. learn.c has re-rolled forbidden bytes
+        // since it was written; nothing checked template output, and the check is not redundant:
+        // enc_vendor_mfg draws a random model byte straight after the company id, so an Apple
+        // template could roll 0x07/0x0F (pairing pop-up on nearby phones) or 0x12 (Find My, which
+        // is also this project's own seeded AirTag signature). enc_vendor_mfg now avoids those
+        // three explicitly; this is the backstop for every other family and any future template.
+        // Dropping the payload is the right failure: a decoy with payload_len 0 is simply not
+        // built, whereas emitting one costs a bystander a stalking alert.
+        if (id->payload_len && law3_forbidden(id->payload, id->payload_len)) {
+            id->payload_len = 0;
+            continue;
+        }
         if (id->payload_len) built++;
     }
     return built;
 }
 
+// Ambient-derived crowd size for THIS board. No fleet-size divisor: boards are additive, each
+// sizing itself from what it measures (see 2026-08-24-additive-fleet-population-design.md).
+// The old GEN_CEILING (16/8) and CHURN_ACTIVE_SET (16) clamps are gone -- CHURN_ACTIVE_SET is the
+// legacy scale that settings.c already documents as having broken the crowd on hardware when
+// conflated with the real crowd size, and it capped this path far below any real environment
+// (measured ambient runs 44-529 devices/min). BLE_DEVICES_MAX is the real bound: the static array.
 uint8_t generate_active_target(const rf_model_t *m)
 {
     int t = (int)((m->pop_ewma * GEN_FACTOR_X10 + 5) / 10);   // round(pop*factor)
     if (t < GEN_FLOOR) t = GEN_FLOOR;
-    if (t > GEN_CEILING) t = GEN_CEILING;
-    if (t > CHURN_ACTIVE_SET) t = CHURN_ACTIVE_SET;
+    if (t > BLE_DEVICES_MAX) t = BLE_DEVICES_MAX;
     return (uint8_t)t;
 }
 

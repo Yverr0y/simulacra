@@ -100,6 +100,117 @@ vendor_histogram               0.0015 logic
 HEADLINE (max) 0.1526  worst tell: ad_structure
 ```
 
+> **This single-capture baseline is not a pass. Cross-validation (2026-08-25) shows `ad_structure`
+> is overfit to `long.pcap`; see below. Score against several captures, never one.**
+
+### Cross-validation: one capture cannot tell "closed" from "memorised" (2026-08-25)
+
+Same decoy build, each capture given its own learned `model.seed` (the firmware learns locally, so
+reusing one crowd across environments would measure capture-to-capture mismatch instead of
+detectability). `long.pcap` reproduces 0.153, which confirms the harness rather than the decoys.
+
+**Captures are not interchangeable - classify mobility before comparing.** A capture taken while
+driving sweeps through hundreds of brief roadside encounters, so its device mix is vehicle traffic,
+not the pedestrian and indoor crowd the fleet is carried through. Measured turnover separates them:
+
+```
+CAPTURE          DEVS  SPAN_m   DEV/MIN  MED_PRES  ONE_SHOT   CLASS
+long.pcap         689   365.7       1.9     479 s        0%   STATIONARY (busy, 6 h)
+newlong.pcap       45    61.8       0.7    1018 s        7%   STATIONARY (quiet)
+errands.pcap     2071    17.6     117.8       7 s       45%   MOBILE - driving
+baseline0825       16    21.8       0.7     720 s        0%   STATIONARY (quiet bench)
+```
+
+```
+CAPTURE                              DEVS    HEAD  ad_struct  address_t  vendor_hi  interval_
+long.pcap    (2026-07-05, TUNED ON)   689   0.153      0.153      0.044      0.002      0.003
+newlong.pcap (2026-07-17)              45   0.311      0.269      0.026      0.002      0.002
+baseline     (2026-08-25, CLEAN)       16   0.925      0.925      0.144      0.019      0.001
+--- mobile, different environment class; do not read as deployment exposure ---
+errands.pcap (2026-07-21, DRIVING)   2071   0.689      0.689      0.035      0.089      0.004
+```
+
+> **FIXED 2026-08-26 - the table above is the DIAGNOSIS, kept for the reasoning. Current numbers are
+> at the end of this section.** AD structure is now learned from `rf_model` like intervals and
+> vendors, so it tracks the room instead of one July capture.
+
+**`ad_structure` is 0.153 on the capture it was tuned on and 0.27-0.93 on three it has never seen.**
+The cause is visible in one row of data - the flags-only (`01`) device share that
+`pick_no_mfg_template()` hardcodes at ~62%:
+
+| capture | `01` | `01,03` |
+|---|---|---|
+| long.pcap (tuned on) | **0.527** | 0.206 |
+| newlong.pcap | 0.067 | 0.000 |
+| errands.pcap | 0.003 | 0.002 |
+| baseline 2026-08-25 | 0.000 | 0.000 |
+
+Restricting to the three STATIONARY captures - the fair comparison - flags-only is 52.7% / 6.7% /
+0.0%. A hardcoded constant cannot cover a 0-to-53% spread, so the tuning is fitted to one location.
+With 16 ambient devices in the clean baseline, a true rate of 0.53 would show zero flags-only
+devices with probability 5.7e-06, so that mix is firmly rejected there.
+
+**This is environment variance, not circular calibration.** `long.pcap` was annotated for weeks as
+decoy-contaminated, which would have made the 53% our own decoys and the tuning self-referential.
+It is not. Every pre-2026-08 capture here (`long`, `newlong`, `errands`) was taken with no decoys
+running - confirmed by the operator, and independently by the data: the decoys of 2026-07-05
+emitted ~86% service-data (`01,03,16`), which appears in `long.pcap` **zero times**. All four
+captures are therefore clean ambient, and the 53% flags-only is genuine for that location. Real
+environments simply differ this much.
+
+**Consequence: these are absolute measurements, not relative ones.** Results in this README that
+were hedged as "relative" on the contamination assumption can be read at face value.
+
+**Scale the conclusion honestly.** `long.pcap` is a busy stationary location (689 devices over 6 h)
+and is therefore *closer* to carried-in-public use than the 16-device bench baseline is. The 0.925
+is worst-case-in-a-quiet-room, not typical public exposure. What the spread rules out is a single
+frozen mix - it does not show the decoys are wide open everywhere. **We still have no pedestrian /
+public walking capture, which is the actual deployment mode; that is the gap worth closing next.**
+
+**Root cause, and why the other axes are fine.** `interval_distribution` (0.001-0.004) and
+`vendor_histogram` (0.002-0.089) stay closed across all four captures because they are *learned at
+runtime* from `rf_model_t` (`other_itvl_bins`, `vendors[]`). `rf_model_t` carries **no AD-structure
+histogram**, so structure is the one axis frozen to literals fitted to a single 2026-07-05 capture
+(`generate.c`, `r < 62` / `r < 86`). The axes the model observes generalise; the axis it does not
+observe does not. The 2026-07-13 note in this README warned that driving the number lower "would
+over-fit one capture" - that is what happened.
+
+**Fix direction:** observe AD structure into `rf_model_t` and drive `pick_no_mfg_template()` from
+the learned histogram, exactly as intervals and vendors already work. Re-tuning the literals against
+a different capture would only move the overfit.
+
+### AD structure, after learning it (2026-08-26)
+
+Done as described, in two passes. `rf_model_t` gained `adstruct_bins` (no-mfg shape mix) and then
+`mfgstruct_bins`, both fed from `observe.c` and decayed on the same rolling window as every other
+histogram. The old literals survive only as the cold-start default, used until the model has seen
+`RF_ADSTRUCT_MIN_OBS` adverts.
+
+The second pass was necessary because fixing the no-mfg mix moved the residual one layer down:
+`enc_vendor_mfg` emitted exactly one shape, `01,ff`, whose real share measures **100.0% / 50.0% /
+15.6% / 0.0%** across the four captures. Identical in character to the flags-only collapse, so it is
+learned too rather than replaced with a fixed varied set. Bare `ff` (a vendor advert with **no flags
+element**, 43.1% of one capture's vendor devices) could not be emitted at all before.
+
+```
+                        hardcoded   no-mfg learned   both learned
+long.pcap (TUNED ON)        0.153            0.083          0.088
+newlong.pcap                0.269            0.225          0.093
+errands.pcap (drive)        0.689            0.691          0.381
+baseline 2026-08-25         0.925            0.791          0.342
+```
+
+Spread **[0.153-0.925] -> [0.088-0.381]**, and the capture the constants were originally fitted to
+improved as well, which is what replacing a fitted constant with something that tracks should do.
+`ad_structure` is no longer the headline tell on three of the four captures; worst-case headline
+across all captures falls **0.925 -> 0.448**.
+
+**`presence_duration` (0.284-0.448) is now the worst axis.** That is a deliberate, accepted cost:
+the persistent identity band was removed on 2026-08-26, so the fleet no longer reproduces ambient's
+long presence tail. A decoy that outlives the thing it covers is a tracking handle, and closing this
+axis by re-adding long-lived identities is the one fix that must not be applied. See
+`tests/test_addr_onair_cap.py`, which exists to fail if it is.
+
 **AD-structure: found at 0.88, closed to 0.15 (2026-07-13).** Adding the tell exposed a gap the
 three distributional tells were blind to - the decoys advertised beacon-rich payloads (`01,03,16`
 service-data **86%**) while real ambient BLE is terse (`01` flags-only **53%**, `01,03` flags+uuid
@@ -110,8 +221,11 @@ match the real crowd on the two biggest signatures almost exactly (`01` 0.527 vs
 vs 0.21). The residual 0.15 is the deliberate tracker/beacon persona (`01,03,16` ~14%, ~0 in *this*
 capture but present in real environments) plus real signatures the decoys don't emit by design
 (empty adverts 9%, flags+name 5%, flags+TX-power 1%). Driving it lower would over-fit one capture's
-beacon count and delete the beacon persona. NOTE: `long.pcap` is real-ambient+decoy *mixed*, a
-relative measure; the structural direction is robust regardless.
+beacon count and delete the beacon persona - which is what then happened; see the cross-validation
+above. CORRECTION (2026-08-25): `long.pcap` was long annotated here as real-ambient+decoy *mixed*
+and its numbers hedged as merely "relative". It is not mixed. It was captured with no decoys
+running, confirmed both by the operator and by the data (the decoys of that date emitted ~86%
+`01,03,16`, which is absent from the capture). Its figures are absolute, not relative.
 
 The three distributional tells remain closed; the honest headline history is 0.38 → 0.004
 (distributional) → 0.88 (AD structure found) → 0.15 (AD structure closed):
@@ -207,9 +321,40 @@ The **presence_duration** discriminator scores how long each address stays obser
   per-advert, so exact bytes would measure noise, not structure).
 - **Learned-shape path** - DONE (2026-07-13). See "Learned-shape audit" below.
 - **Presence / lifespan cohort** - DONE (2026-07-13). See "Presence-duration tell" above.
-- **RSSI / TX-power spread** - still deferred: a physical-layer tell that needs a **decoy-only
-  capture** as a clean label source (`long.pcap` carries RSSI but is real+decoy mixed, so signal
-  alone can't label which adverts are decoys).
+- **RSSI / TX-power spread** - MEASURED (2026-08-25), was deferred. Decoys labelled in
+  `ble_fleet_2026-08-25.pcap` by the four AD signatures absent from ambient (`01,ff`, `01`,
+  `01,09,ff`, `01,03`; label leaks into 0 of 16 baseline devices). Metric is the spread of
+  per-device median RSSI **across** devices - decoys radiate from 3 points while real devices sit at
+  many distances. Within-device stdev is NOT diagnostic from these captures: everything was
+  stationary, so decoy steadiness cannot be told apart from a still room.
+
+  ```
+  ambient  baseline 2026-08-25 (quiet bench)  n= 16   across-dev sd 12.26   median RSSI -68
+  ambient  long.pcap    (busy, 6 h)           n=665   across-dev sd 13.22   median RSSI -71
+  ambient  newlong.pcap (quiet)               n= 40   across-dev sd 14.60   median RSSI -69.5
+  DECOY    fleet 2026-08-25                   n=183   across-dev sd  9.90   median RSSI -58
+  ```
+
+  Ambient spread is a stable 12.3-14.6 across three unrelated clean captures, so the decoys' 9.90 is
+  a **real if modest tell: ratio 0.68-0.81, a band that excludes 1.0.** Decoy identities cluster
+  ~25-30% tighter than a real crowd, and sit ~11 dB louder.
+
+  **The bench flatters this result.** `dither_tx()` (`generate.c`) draws per-identity TX from
+  {-12,-9,-6,-3,0,3}, a 15 dB range worth sd 5.12. Measured decoy spread is 9.90, so about
+  sqrt(9.90^2 - 5.12^2) = 8.5 dB came from the 3 boards' physical separation and multipath - with
+  the sniffer sitting among them. To an adversary at realistic distance those 3 boards collapse
+  toward a single point, that 8.5 dB shrinks, and the dither becomes the only diversity the fleet
+  has: the ratio would fall toward 5.12/13 ~ 0.39. **UNVERIFIED extrapolation - it needs a capture
+  taken at distance, which is also the missing pedestrian capture.**
+
+  Fix direction if confirmed: widen and lower `dither_tx()`. Reaching ambient's ~13 dB from the
+  dither alone needs roughly a 30 dB range (e.g. -27..+3 dBm, within ESP32 capability). That trades
+  decoy audibility for realism - some decoys become faint - which is a design call, not a bug fix.
+
+  (The original deferral is void: it held that the axis needed a decoy-only capture as a clean label
+  source, on the mistaken belief that `long.pcap` was real+decoy mixed. It was not, so the block
+  never existed. `rssi_physical` should stop being reported as "modeled" in `scorecard.py` now that
+  it can be measured.)
 
 ## Privacy
 

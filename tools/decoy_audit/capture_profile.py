@@ -97,14 +97,23 @@ def parse_adverts(path):
     return out
 
 def build_profile(adverts):
-    at=Counter(a["atype"] for a in adverts)
     # Per-address aggregation. Co-travel correlation tracks entities, not advert volume,
     # so the vendor histogram is DEVICE-weighted: one chatty beacon must not dominate.
     ts=defaultdict(list); dev_co=defaultdict(Counter); dev_ad=defaultdict(Counter)
+    dev_at={}
     for a in adverts:
         ts[a["addr"]].append(a["ts"])
         dev_co[a["addr"]][a["company"]] += 1
         dev_ad[a["addr"]][a["ad_sig"]] += 1
+        dev_at[a["addr"]] = a["atype"]
+    # atype is DEVICE-weighted for the same reason as vendor/ad_sig, and it is the axis where
+    # advert-weighting hurt most: address type is fixed by the address's top two bits, so every
+    # advert from one address carries the same atype and advert-weighting only measures how
+    # chatty that device is. RPA phones advertise far faster than static beacons, so the old
+    # per-advert count read 0.022 static on the 2026-08-25 ambient baseline where the device
+    # mix is 0.250 - an 11x distortion, compared against a decoy side that was always
+    # device-weighted (one synth row = one device). Mixed-basis comparison.
+    at=Counter(dev_at.values())
     # Each device's AD-structure signature = its modal ordered AD-type sequence, device-weighted
     # so one chatty beacon can't dominate the structural histogram.
     ads=Counter()
@@ -116,6 +125,33 @@ def build_profile(adverts):
     for addr,cos in dev_co.items():
         nz=[(c,cnt) for c,cnt in cos.items() if c]
         ven[str(max(nz,key=lambda x:x[1])[0]) if nz else "none"] += 1
+    # AD-STRUCTURE buckets over NO-MFG devices only, mirroring rf_adstruct_bin() in main/rf_model.c.
+    # This is what feeds the model seed so synth_dump exercises the LEARNED structure path rather
+    # than generate.c's cold-start default -- without it the audit would score a code path the
+    # firmware only uses for its first few seconds in an unknown room.
+    # Device-weighted and no-mfg-only for the same reasons the firmware applies: an advert carrying
+    # mfg data takes its shape from that vendor's template, not from this mix.
+    adstruct=[0,0,0,0]      # FLAGS_ONLY, UUID16, SVCDATA, OTHER
+    # And the MFG-BEARING mix, mirroring rf_mfgstruct_bin()'s priority order: name beats
+    # appearance beats tx-power, and the ABSENCE of a flags element is itself the distinguishing
+    # feature of the bare-"ff" bucket. Same reason as adstruct -- without this the audit scores
+    # generate.c's fallback rather than the learned path.
+    mfgstruct=[0,0,0,0,0]   # FLAGS_MFG, MFG_ONLY, NAME, APPEARANCE, TXPOWER
+    for addr,sigs in dev_ad.items():
+        nz=[(c,cnt) for c,cnt in dev_co[addr].items() if c]
+        sig=max(sigs.items(),key=lambda x:x[1])[0]
+        parts=[p for p in sig.split(",") if p]
+        if nz:                                         # has mfg data
+            if   "08" in parts or "09" in parts: mfgstruct[2]+=1
+            elif "19" in parts:                  mfgstruct[3]+=1
+            elif "0a" in parts:                  mfgstruct[4]+=1
+            elif "01" in parts:                  mfgstruct[0]+=1
+            else:                                mfgstruct[1]+=1
+            continue
+        if   "16" in parts:                    adstruct[2]+=1
+        elif "02" in parts or "03" in parts:   adstruct[1]+=1
+        elif parts==["01"]:                    adstruct[0]+=1
+        else:                                  adstruct[3]+=1
     # per-address median interval -> bin
     ibins=[0]*7
     for addr,t in ts.items():
@@ -132,7 +168,7 @@ def build_profile(adverts):
             if PRESENCE_BINS[_k]<=span<PRESENCE_BINS[_k+1]: pbins[_k]+=1; break
     if not ts:
         sys.stderr.write("capture_profile: no addresses with timestamps; presence_ms_bins all zero\n")
-    n=len(adverts) or 1
+    n=sum(at.values()) or 1                 # devices, not adverts - see the atype note above
     isum=sum(ibins) or 1
     vtot=sum(ven.values()) or 1
     adtot=sum(ads.values()) or 1
@@ -141,6 +177,8 @@ def build_profile(adverts):
             "itvl_bins":[b/isum for b in ibins],
             "vendor":{k:v/vtot for k,v in ven.items()},
             "ad_sig":{k:v/adtot for k,v in ads.items()},
+            "adstruct":adstruct,
+            "mfgstruct":mfgstruct,
             "presence_ms_bins":pbins}
     rh = rssi_hist([a.get("rssi") for a in adverts])
     if rh:
@@ -163,6 +201,34 @@ def write_model_seed(profile, path):
         # the generator turns into service-data/beacon decoys (generate.c build_for_vendor).
         oc=int(round(none_share*1000))
         f.write("OTHER %d %s\n" % (oc, " ".join(str(int(none_share*b)) for b in binc)))
+        # AD structure, so synth_dump exercises the LEARNED path in generate.c rather than its
+        # cold-start default. Without this line the audit would score a branch the firmware only
+        # takes for its first few seconds in an unfamiliar room. Scaled to the same ~1000
+        # magnitude as the vendor counts so it clears RF_ADSTRUCT_MIN_OBS.
+        ads_b = profile.get("adstruct") or [0, 0, 0, 0]
+        tot_b = sum(ads_b)
+        if tot_b:
+            f.write("ADS %s\n" % " ".join(str(int(round(1000.0 * x / tot_b))) for x in ads_b))
+        # Same for the MFG-BEARING mix. Without it the audit scores generate.c's fallback, not the
+        # learned variant draw, and the ad_structure number would describe a path the firmware
+        # leaves almost immediately.
+        mfg_b = profile.get("mfgstruct") or [0, 0, 0, 0, 0]
+        tot_m = sum(mfg_b)
+        if tot_m:
+            f.write("MFGS %s\n" % " ".join(str(int(round(1000.0 * x / tot_m))) for x in mfg_b))
+        # Ambient RSSI shape, so dither_tx() exercises its LEARNED spread instead of the cold-start
+        # uniform. Re-binned from this profile's 14 x 5 dB (-100..-30) to the firmware's
+        # RF_RSSI_BINS 8 x 10 dB (-100..-20): firmware bin b is profile bins 2b and 2b+1, and the
+        # top firmware bin (-30..-20) has no profile counterpart, so it stays 0.
+        rb = profile.get("rssi_bins")
+        if rb:
+            fw = [0.0] * 8
+            for i, v in enumerate(rb):
+                b = i // 2
+                if b < 7:
+                    fw[b] += v
+            s = sum(fw) or 1.0
+            f.write("RSSI %s\n" % " ".join(str(int(round(1000.0 * x / s))) for x in fw))
 
 def main():
     adv=parse_adverts(sys.argv[1]); prof=build_profile(adv)

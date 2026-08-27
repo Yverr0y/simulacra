@@ -1,7 +1,9 @@
 #include "ble_devices.h"
+#include "rf_model.h"
 #include "roster.h"
 #include "templates.h"
 #include "esp_random.h"
+#include <string.h>       // memcpy/memset for the pre-drawn next_addr
 
 // Role split (user-chosen): ~70% transient / ~30% resident.
 #define ROLE_RESIDENT_PCT   30
@@ -17,14 +19,12 @@
 #define TRANSIENT_MAX_MS   720000u    // 12 min
 #define RESIDENT_MIN_MS   1800000u    // 30 min
 #define RESIDENT_MAX_MS   5400000u    // 90 min
-// Persistent "infrastructure" band: a slice of STATIC devices hold one address for hours, matching
-// the real ambient >2h presence tail. ~28% of the static 52% -> ~15% of the fleet.
-#define PERSISTENT_PCT_OF_STATIC  28
-#define PERSISTENT_MIN_MS  14400000u  // 4 h  (outlives any normal session -> the address persists)
-#define PERSISTENT_MAX_MS  43200000u  // 12 h
+// ADDR_MAX_ONAIR_MS lives in ble_devices.h: probe_agents.c pins its Wi-Fi MAC rotation to the same
+// ceiling, because "no persistent identifiers" has to hold across BOTH radios.
 // Rotation cadence per subtype (independent phase + wide jitter). STATIC never rotates.
+// RPA_ROT_MAX is held at the ceiling: a 20 min rotation would have outlived it.
 #define RPA_ROT_MIN_MS     600000u    // 10 min
-#define RPA_ROT_MAX_MS    1200000u    // 20 min
+#define RPA_ROT_MAX_MS     ADDR_MAX_ONAIR_MS   // 15 min
 #define NRPA_ROT_MIN_MS     60000u    // 1 min
 #define NRPA_ROT_MAX_MS    600000u    // 10 min
 // Bound-persona RPA rotates on the fast-realistic end (real phones ~15 min), shorter than the unbound
@@ -48,6 +48,8 @@ static float        s_accel_applied = 1.0f;
 #define TURBO_LIFE_MAX_MS 5000u   // 5 s
 
 static bool s_turbo = false;
+static const rf_model_t *s_tx_model;   // for persona TX draws; see ble_devices_set_model
+void ble_devices_set_model(const rf_model_t *m) { s_tx_model = m; }
 
 static uint32_t rnd_range(uint32_t lo, uint32_t hi) { return lo + (esp_random() % (hi - lo + 1u)); }
 
@@ -103,13 +105,7 @@ static void dev_spawn(ble_device_t *d, uint32_t now_ms)
     d->id = *src;                                   // copy behaviour (and its addr, overwritten next)
     d->atype = pick_atype();
     make_random_addr(d->id.addr, top2_for(d->atype));
-    // A slice of static devices are PERSISTENT infrastructure (one address held for hours);
-    // everyone else churns on the transient/resident bands. Only static can persist on air --
-    // an RPA/NRPA device rotates its address regardless of how long the device itself lives.
-    if (d->atype == BLE_ATYPE_STATIC && (esp_random() % 100u) < PERSISTENT_PCT_OF_STATIC) {
-        d->role    = BLE_ROLE_PERSISTENT;
-        d->life_ms = rnd_range(PERSISTENT_MIN_MS, PERSISTENT_MAX_MS);
-    } else if (d->atype == BLE_ATYPE_RPA) {
+    if (d->atype == BLE_ATYPE_RPA) {
         // RPA is always RESIDENT. Drawn into the transient band (2-12 min) an RPA device would
         // usually die before its 10-20 min rotation deadline, presenting an address whose top two
         // bits advertise "I rotate" while it demonstrably never does - an inverted signal. Forcing
@@ -129,10 +125,21 @@ static void dev_spawn(ble_device_t *d, uint32_t now_ms)
         uint32_t l = (uint32_t)((float)d->life_ms / s_accel);
         d->life_ms = l < 1000u ? 1000u : l;         // never below a second (would thrash the radios)
     }
+    // A STATIC device never rotates, so its address is on air for exactly its lifetime. Cap the
+    // life to enforce ADDR_MAX_ONAIR_MS. It then dies and is reborn as a WHOLLY new device: fresh
+    // unique address, freshly drawn behaviour, no continuity of any kind with what it was.
+    // Rotating subtypes are already bounded by their rotation cadence, both of which sit at or
+    // under the ceiling. Applied after turbo/accel so those can only ever shorten, never extend.
+    if (d->atype == BLE_ATYPE_STATIC && d->life_ms > ADDR_MAX_ONAIR_MS)
+        d->life_ms = rnd_range(ADDR_MAX_ONAIR_MS / 2u, ADDR_MAX_ONAIR_MS);
     d->born_ms = now_ms;
     d->alive = true;
     // Independent rotation phase: first rotation is a full jittered interval out from birth.
     d->next_rotate_ms = (d->atype == BLE_ATYPE_STATIC) ? 0 : now_ms + rotate_base(d->atype);
+    // Pre-draw the address this device will rotate TO, so fleetmates can be told about it before
+    // it appears on air (see next_addr in ble_devices.h). STATIC never rotates, so it has none.
+    if (d->atype != BLE_ATYPE_STATIC) make_random_addr(d->next_addr, top2_for(d->atype));
+    else                              memset(d->next_addr, 0, 6);
     d->persona_idx = -1;        // unbound by default; phantom_sync_ble claims bound slots
     d->persona_gen = 0;
 }
@@ -146,6 +153,14 @@ void ble_devices_init(int n, uint32_t now_ms)
 }
 
 int ble_devices_count(void) { return s_n; }
+
+const uint8_t *ble_device_next_addr(int slot)
+{
+    if (slot < 0 || slot >= s_n) return NULL;
+    const ble_device_t *d = &s_dev[slot];
+    if (!d->alive || d->atype == BLE_ATYPE_STATIC) return NULL;   // static never rotates
+    return d->next_addr;
+}
 
 // Live resize. Growing spawns fresh devices into the new slots (they are born now, so they join
 // the crowd on the normal arrival path rather than all appearing pre-aged); shrinking simply stops
@@ -238,7 +253,11 @@ void ble_devices_tick(uint32_t now_ms)
         if (!d->alive) continue;
         if (d->atype == BLE_ATYPE_STATIC) continue;        // static never rotates (bound are always RPA)
         if ((int32_t)(now_ms - d->next_rotate_ms) >= 0) {
-            make_random_addr(d->id.addr, top2_for(d->atype));   // fresh unique addr; binding untouched
+            // Rotate INTO the pre-drawn address rather than minting one here: peers have already
+            // been told about it, so it is excluded from their model and their tracker matcher the
+            // instant it goes on air. Then draw the next one for the same reason. Binding untouched.
+            memcpy(d->id.addr, d->next_addr, 6);
+            make_random_addr(d->next_addr, top2_for(d->atype));
             d->next_rotate_ms = now_ms + (d->persona_idx >= 0 ? persona_rpa_rotate_base()
                                                               : rotate_base(d->atype));
         }
@@ -254,7 +273,13 @@ int ble_device_sync(int slot, int persona_idx, bool apple,
     // A phone presents on BLE as a terse phone shape (flags-only / svc-uuid16), never accessory
     // manufacturer data. Build it directly (no roster draw); company id stays 0.
     d->id.company_id    = 0;
-    d->id.tx_power      = 0;
+    // A dithered level, NOT 0. Under the old sentinel 0 meant "controller default", so every
+    // persona advertised at maximum output -- and personas are roughly a third of the crowd. That
+    // pinned a large, coherent slice of the population to the loud end of the RSSI distribution,
+    // which is the opposite of the spread real phones show. Phones are ordinary radios; give them
+    // an ordinary spread. Kept local rather than routed through generate.c's model-driven
+    // dither_tx() because ble_device_sync has no model handle, and a plain band is honest here.
+    d->id.tx_power      = rf_tx_sample(s_tx_model, esp_random());
     d->id.archetype_idx = 0;
     if (template_build_phone(apple, d->id.payload, &d->id.payload_len, &d->id.adv_itvl_ms) != 0)
         d->id.payload_len = 0;                          // serialization guard (self-test catches)

@@ -81,15 +81,19 @@ class Births(unittest.TestCase):
         self.assertEqual(len(macs), len(set(macs)), "a birth reused a MAC (uniqueness broken)")
 
     def test_wildcard_flag_reflects_assignment(self):
-        # ~SSID_ASSIGN_PCT (62%) of identities get a named set -> ~38% stay wildcard (field==1).
+        # ~SSID_ASSIGN_PCT (21%) of identities get a named set -> ~79% stay wildcard (field==1).
+        # Recalibrated 2026-08-26: the old 62% came from an assumption, the 21% from counting a real
+        # crowd (21.2% of devices ever name a network). Real devices split sharply into "never names"
+        # and "names almost every time"; the old value modelled the middle of that distribution,
+        # which is a shape no real crowd has.
         recs = births(3)
         wc = sum(1 for r in recs if r[2] == 1) / len(recs)
-        self.assertGreater(wc, 0.28, "far too many named (assignment rate too high)")
-        self.assertLess(wc, 0.50, "far too few named (assignment rate too low)")
+        self.assertGreater(wc, 0.70, "far too many named (assignment rate too high)")
+        self.assertLess(wc, 0.88, "far too few named (assignment rate too low)")
         self.assertTrue(all(r[2] in (0, 1) for r in recs), "wildcard field not 0/1")
 
     def test_archetypes_in_range(self):
-        self.assertTrue(all(0 <= r[0] < 4 for r in births(4)))   # PROBE_ARCH_COUNT == 4
+        self.assertTrue(all(0 <= r[0] < 5 for r in births(4)))   # PROBE_ARCH_COUNT == 5
 
     def test_multiplicity_per_archetype(self):
         from collections import Counter
@@ -102,15 +106,20 @@ class Births(unittest.TestCase):
 class WildcardCalibration(unittest.TestCase):
     def test_decoy_wildcard_fraction_in_target_band(self):
         # The whole point of the feature: device-level wildcard fraction drops from 1.0 toward the
-        # measured real anchor (~0.36). Uses the same profiler the scorecard uses.
+        # measured real anchor. Uses the same profiler the scorecard uses.
+        #
+        # Anchor recalibrated 2026-08-26 from an actual census: 21.2% of real devices ever name a
+        # network, so the target is ~0.788 wildcard, not the ~0.36 this test previously asserted.
+        # The band is deliberately tight -- this axis is measured, not assumed, so a drift here is
+        # a real regression rather than sampling noise.
         import importlib.util
         scorecard = os.path.join(TOOL, "probe_behavior_scorecard.py")
         spec = importlib.util.spec_from_file_location("pbs", scorecard)
         S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
         rows = S.run_decoy_model(EXE, 1, 16, 2220, 1000)
         wf = S.decoy_profile_from_agents(rows)["wildcard_fraction"]
-        self.assertGreater(wf, 0.28, f"wildcard_fraction {wf:.3f} below band (too many named)")
-        self.assertLess(wf, 0.50, f"wildcard_fraction {wf:.3f} above band (too few named)")
+        self.assertGreater(wf, 0.72, f"wildcard_fraction {wf:.3f} below band (too many named)")
+        self.assertLess(wf, 0.86, f"wildcard_fraction {wf:.3f} above band (too few named)")
 
 
 if __name__ == "__main__":
