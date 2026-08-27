@@ -12,7 +12,12 @@ own "Recent updates" section keeps only the latest few entries - this is the ful
   now a hard ceiling across **both radios**, honoured by static devices dying and being reborn as
   wholly new devices rather than by rotating. Verified over a 6 h simulated run: 1252 completed
   spans, max 15.0 min, none over. The cost is accepted knowingly - the fleet no longer reproduces
-  that presence tail, and `presence_duration` is now the worst audit axis.
+  that presence tail, and `presence_duration` is now the worst audit axis. Wi-Fi saved-network sets
+  are redrawn on every MAC rotation under the same rule, reversing a deliberate earlier decision to
+  carry them across (a real phone's saved networks belong to the device, not the MAC): a set that
+  outlives a rotation is a persistent identifier, and the one most commonly used to defeat MAC
+  randomisation in the field. Accepted residual: aggregate SSID-to-MAC multiplicity drifts toward
+  one MAC per name, which the 38-entry pool blunts but does not erase.
 - **AD structure is learned, not hardcoded.** The last generation axis the model could not express.
   `pick_no_mfg_template()` had been fitted to a single 2026-07-05 capture in which flags-only
   advertisers were 52.7% of devices; the same share measures 6.7% and 0.0% elsewhere. Structure now
@@ -40,8 +45,11 @@ own "Recent updates" section keeps only the latest few entries - this is the ful
   Measured **66.9/min -> 4.2/min** total; library sync **65.9 -> 2.4**.
 - **Replay-driven presence oracle closed.** Capturing a sealed frame needs no key, and the replay
   window reset on any salt change - so alternating captures from two sender boots made every decoy
-  in range answer with a STATUS. Replay state is now a high-water counter per salt, which keeps
-  multi-Vigil operation working where a global monotonic floor would have broken it.
+  in range answer with a STATUS. Telemetry replay state is now a high-water counter per salt, so an
+  additional or rebooted *sender* resumes cleanly where a global monotonic floor would have refused
+  it. This covers the telemetry path only: CONTROL commands still gate on a single salt-independent
+  monotonic floor per decoy, and that floor is what prevents running two Vigils today - each spends
+  its own counter block, so they would silently fight over which is ahead.
 - **Named-probe rate matched to measurement.** 21% of real devices ever name a network and those
   that do name almost every time, looking for exactly one; the fleet had 62% of personas naming 60%
   of the time with up to three saved networks each - the middle of a distribution that is actually
@@ -86,6 +94,8 @@ own "Recent updates" section keeps only the latest few entries - this is the ful
 - **Wi-Fi crowd realism.** Probe agents now match the ambient device density (divided across the live
   fleet) and a realistic majority probe **named public networks** from a fixed pool - never an
   observed SSID - closing the "everyone's a wildcard" behavioural tell.
+  *(Both halves later revised: the `1/K` division was retired for additive population, and the
+  named-probe share dropped from a majority to a measured ~21% minority. See the entries above.)*
 - **Cross-protocol personas (M10 v1).** BLE and Wi-Fi identities are now bound into single,
   co-present synthetic devices that appear and leave together - so a correlator can't isolate your
   real dual-radio phone by filtering out single-radio "ghosts." Persona BLE identities present a
@@ -99,6 +109,8 @@ own "Recent updates" section keeps only the latest few entries - this is the ful
 - **Presence & lifespan realism.** Decoys now include persistent static-infrastructure devices and
   per-type address rotation alongside the death/rebirth churn, so the population's come-and-go
   behaviour matches a real crowd instead of a fixed set.
+  *(Later reversed: the persistent cohort was removed entirely under the 15-minute ceiling. It made
+  a decoy a better tracking handle than the phone it covered. See "No persistent identifiers".)*
 - **Vigil console (CYD).** Live radar/threat dashboard reskinned, plain-language labels, responsive
   touch control, and a per-node fleet roster surfacing TX-health and battery state.
 - **Post-flash sequence gate.** A two-board bench check confirms each fake phone keeps an
