@@ -1,0 +1,4 @@
+# r-htonly @ ch6 2.4 GHz -- IE structure derived from a real
+# capture (2026-08-26 census of 877 probing devices), emitted by probe_dump with a
+# fixed synthetic SA of 02:11:22:33:44:55. Regenerate with make_fixtures.py.
+40000000ffffffffffff021122334455ffffffffffff00000000010802040b160c12182432043048606c2d1a630917ff00000000000000000000000000000000000000000000

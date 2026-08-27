@@ -64,6 +64,43 @@ class BuildRecipesAgree(unittest.TestCase):
                           "run.ps1 links rf_model.c without /DSIMULACRA_HOST_NO_NVS")
 
 
+class EveryToolMakefileIsSelfConsistent(unittest.TestCase):
+    """The same checks, applied to every tool CI runs `make` on -- not just this one.
+
+    CI builds probe_audit, decoy_audit, pcap_learn and radar_audit with `cc`. The bench builds two of
+    them with MSVC via run.ps1, and a Windows-only bench cannot run the POSIX build at all, so a
+    Makefile that is missing a source or names one that does not exist is invisible locally and only
+    surfaces as a red CI run. Both failures on 2026-08-26 were this shape. Checking all four costs
+    nothing and removes the "we only guarded the tool that broke last time" gap.
+    """
+
+    TOOLS = ("probe_audit", "decoy_audit", "pcap_learn", "radar_audit")
+
+    def test_all_listed_sources_exist(self):
+        for tool in self.TOOLS:
+            mk_path = os.path.join(TOOLS, tool, "Makefile")
+            if not os.path.exists(mk_path):
+                continue
+            mk = read(mk_path)
+            for rel in re.findall(r"\$\(ROOT\)/([A-Za-z0-9_/]+\.c)", mk):
+                self.assertTrue(
+                    os.path.exists(os.path.join(ROOT, rel)),
+                    "tools/%s/Makefile lists %s, which does not exist" % (tool, rel))
+
+    def test_probe_audit_recipes_agree(self):
+        """probe_audit has the same two-recipe split as decoy_audit and the same failure mode."""
+        tool = os.path.join(TOOLS, "probe_audit")
+        mk, ps = read(tool, "Makefile"), read(tool, "run.ps1")
+        mk_src = c_basenames(mk.split("SRC :=", 1)[1].split("INC :=", 1)[0])
+        ps_src = c_basenames(ps.split("cl /nologo", 1)[1].split("/Fe:", 1)[0])
+        self.assertEqual(
+            mk_src, ps_src,
+            "probe_audit build recipes disagree.\n"
+            "  only in Makefile: %s\n"
+            "  only in run.ps1 : %s"
+            % (sorted(mk_src - ps_src) or "-", sorted(ps_src - mk_src) or "-"))
+
+
 class LearnDependenciesAreCarriedEverywhere(unittest.TestCase):
     """learn.c depends on sig_store, so every harness linking it needs those sources.
 
